@@ -1,0 +1,418 @@
+"""AgricultureClaw -- Livestock management domain module.
+
+Actions for animals, health records, feeding records, and weight records (4 tables, 10 actions).
+Imported by db_query.py (unified router).
+"""
+import os
+import sys
+import uuid
+from datetime import datetime, timezone
+
+try:
+    sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
+    from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
+    from erpclaw_lib.response import ok, err, row_to_dict
+    from erpclaw_lib.audit import audit
+
+    ENTITY_PREFIXES.setdefault("animal", "ANM-")
+except ImportError:
+    pass
+
+SKILL = "agricultureclaw"
+
+_now_iso = lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+VALID_SPECIES = ("cattle", "swine", "poultry", "sheep", "goat", "other")
+VALID_GENDERS = ("male", "female")
+VALID_ANIMAL_STATUS = ("active", "sold", "deceased", "transferred")
+VALID_HEALTH_TYPES = ("vaccination", "treatment", "examination", "deworming")
+
+
+def _validate_company(conn, company_id):
+    if not company_id:
+        err("--company-id is required")
+    if not conn.execute("SELECT id FROM company WHERE id = ?", (company_id,)).fetchone():
+        err(f"Company {company_id} not found")
+
+
+def _validate_animal(conn, animal_id):
+    if not animal_id:
+        err("--animal-id is required")
+    if not conn.execute("SELECT id FROM agricultureclaw_animal WHERE id = ?", (animal_id,)).fetchone():
+        err(f"Animal {animal_id} not found")
+
+
+# ===========================================================================
+# 1. add-animal
+# ===========================================================================
+def add_animal(conn, args):
+    _validate_company(conn, args.company_id)
+
+    species = getattr(args, "species", None)
+    if not species:
+        err("--species is required")
+    if species not in VALID_SPECIES:
+        err(f"Invalid species: {species}. Must be one of: {', '.join(VALID_SPECIES)}")
+
+    gender = getattr(args, "gender", None)
+    if gender and gender not in VALID_GENDERS:
+        err(f"Invalid gender: {gender}. Must be one of: {', '.join(VALID_GENDERS)}")
+
+    animal_id = str(uuid.uuid4())
+    conn.company_id = args.company_id
+    naming = get_next_name(conn, "animal", company_id=args.company_id)
+    now = _now_iso()
+
+    conn.execute("""
+        INSERT INTO agricultureclaw_animal (
+            id, naming_series, tag_number, species, breed, birth_date, gender,
+            sire_id, dam_id, purchase_date, purchase_cost, current_weight,
+            animal_status, company_id, created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        animal_id, naming,
+        getattr(args, "tag_number", None),
+        species,
+        getattr(args, "breed", None),
+        getattr(args, "birth_date", None),
+        gender,
+        getattr(args, "sire_id", None),
+        getattr(args, "dam_id", None),
+        getattr(args, "purchase_date", None),
+        getattr(args, "purchase_cost", None),
+        getattr(args, "current_weight", None),
+        "active",
+        args.company_id, now, now,
+    ))
+    audit(conn, SKILL, "agri-add-animal", "agricultureclaw_animal", animal_id,
+          new_values={"species": species, "tag_number": getattr(args, "tag_number", None)})
+    conn.commit()
+    ok({"id": animal_id, "naming_series": naming, "species": species, "animal_status": "active"})
+
+
+# ===========================================================================
+# 2. update-animal
+# ===========================================================================
+def update_animal(conn, args):
+    animal_id = getattr(args, "id", None)
+    if not animal_id:
+        err("--id is required")
+    if not conn.execute("SELECT id FROM agricultureclaw_animal WHERE id = ?", (animal_id,)).fetchone():
+        err(f"Animal {animal_id} not found")
+
+    updates, params, changed = [], [], []
+    for arg_name, col_name in {
+        "tag_number": "tag_number", "breed": "breed", "birth_date": "birth_date",
+        "purchase_date": "purchase_date", "purchase_cost": "purchase_cost",
+        "current_weight": "current_weight",
+    }.items():
+        val = getattr(args, arg_name, None)
+        if val is not None:
+            updates.append(f"{col_name} = ?")
+            params.append(val)
+            changed.append(col_name)
+
+    gender = getattr(args, "gender", None)
+    if gender is not None:
+        if gender not in VALID_GENDERS:
+            err(f"Invalid gender: {gender}. Must be one of: {', '.join(VALID_GENDERS)}")
+        updates.append("gender = ?")
+        params.append(gender)
+        changed.append("gender")
+
+    animal_status = getattr(args, "animal_status", None)
+    if animal_status is not None:
+        if animal_status not in VALID_ANIMAL_STATUS:
+            err(f"Invalid animal-status: {animal_status}. Must be one of: {', '.join(VALID_ANIMAL_STATUS)}")
+        updates.append("animal_status = ?")
+        params.append(animal_status)
+        changed.append("animal_status")
+
+    if not updates:
+        err("No fields to update")
+
+    updates.append("updated_at = ?")
+    params.append(_now_iso())
+    params.append(animal_id)
+    conn.execute(f"UPDATE agricultureclaw_animal SET {', '.join(updates)} WHERE id = ?", params)
+    audit(conn, SKILL, "agri-update-animal", "agricultureclaw_animal", animal_id,
+          new_values={"updated_fields": changed})
+    conn.commit()
+    ok({"id": animal_id, "updated_fields": changed})
+
+
+# ===========================================================================
+# 3. get-animal
+# ===========================================================================
+def get_animal(conn, args):
+    animal_id = getattr(args, "id", None)
+    if not animal_id:
+        err("--id is required")
+    row = conn.execute("SELECT * FROM agricultureclaw_animal WHERE id = ?", (animal_id,)).fetchone()
+    if not row:
+        err(f"Animal {animal_id} not found")
+    data = row_to_dict(row)
+
+    # Include health records
+    health = conn.execute(
+        "SELECT * FROM agricultureclaw_health_record WHERE animal_id = ? ORDER BY record_date DESC",
+        (animal_id,)
+    ).fetchall()
+    data["health_records"] = [row_to_dict(h) for h in health]
+
+    # Include weight records
+    weights = conn.execute(
+        "SELECT * FROM agricultureclaw_weight_record WHERE animal_id = ? ORDER BY weigh_date DESC",
+        (animal_id,)
+    ).fetchall()
+    data["weight_records"] = [row_to_dict(w) for w in weights]
+    ok(data)
+
+
+# ===========================================================================
+# 4. list-animals
+# ===========================================================================
+def list_animals(conn, args):
+    where, params = ["1=1"], []
+    if getattr(args, "company_id", None):
+        where.append("company_id = ?")
+        params.append(args.company_id)
+    if getattr(args, "species", None):
+        where.append("species = ?")
+        params.append(args.species)
+    if getattr(args, "animal_status", None):
+        where.append("animal_status = ?")
+        params.append(args.animal_status)
+    if getattr(args, "search", None):
+        where.append("(tag_number LIKE ? OR breed LIKE ?)")
+        params.extend([f"%{args.search}%", f"%{args.search}%"])
+
+    where_sql = " AND ".join(where)
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM agricultureclaw_animal WHERE {where_sql}", params
+    ).fetchone()[0]
+    params.extend([args.limit, args.offset])
+    rows = conn.execute(
+        f"SELECT * FROM agricultureclaw_animal WHERE {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        params
+    ).fetchall()
+    ok({
+        "rows": [row_to_dict(r) for r in rows],
+        "total_count": total, "limit": args.limit, "offset": args.offset,
+        "has_more": (args.offset + args.limit) < total,
+    })
+
+
+# ===========================================================================
+# 5. add-health-record
+# ===========================================================================
+def add_health_record(conn, args):
+    _validate_company(conn, args.company_id)
+    animal_id = getattr(args, "animal_id", None)
+    _validate_animal(conn, animal_id)
+
+    record_type = getattr(args, "record_type", None)
+    if not record_type:
+        err("--record-type is required")
+    if record_type not in VALID_HEALTH_TYPES:
+        err(f"Invalid record-type: {record_type}. Must be one of: {', '.join(VALID_HEALTH_TYPES)}")
+
+    hr_id = str(uuid.uuid4())
+    conn.execute("""
+        INSERT INTO agricultureclaw_health_record (
+            id, animal_id, record_date, record_type, description,
+            veterinarian, cost, company_id
+        ) VALUES (?,?,?,?,?,?,?,?)
+    """, (
+        hr_id, animal_id,
+        getattr(args, "record_date", None),
+        record_type,
+        getattr(args, "description", None),
+        getattr(args, "veterinarian", None),
+        getattr(args, "cost", None),
+        args.company_id,
+    ))
+    audit(conn, SKILL, "agri-add-health-record", "agricultureclaw_health_record", hr_id,
+          new_values={"animal_id": animal_id, "record_type": record_type})
+    conn.commit()
+    ok({"id": hr_id, "animal_id": animal_id, "record_type": record_type})
+
+
+# ===========================================================================
+# 6. list-health-records
+# ===========================================================================
+def list_health_records(conn, args):
+    where, params = ["1=1"], []
+    if getattr(args, "animal_id", None):
+        where.append("animal_id = ?")
+        params.append(args.animal_id)
+    if getattr(args, "company_id", None):
+        where.append("company_id = ?")
+        params.append(args.company_id)
+    if getattr(args, "record_type", None):
+        where.append("record_type = ?")
+        params.append(args.record_type)
+
+    where_sql = " AND ".join(where)
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM agricultureclaw_health_record WHERE {where_sql}", params
+    ).fetchone()[0]
+    params.extend([args.limit, args.offset])
+    rows = conn.execute(
+        f"SELECT * FROM agricultureclaw_health_record WHERE {where_sql} ORDER BY record_date DESC LIMIT ? OFFSET ?",
+        params
+    ).fetchall()
+    ok({
+        "rows": [row_to_dict(r) for r in rows],
+        "total_count": total, "limit": args.limit, "offset": args.offset,
+        "has_more": (args.offset + args.limit) < total,
+    })
+
+
+# ===========================================================================
+# 7. add-feeding-record
+# ===========================================================================
+def add_feeding_record(conn, args):
+    _validate_company(conn, args.company_id)
+    animal_id = getattr(args, "animal_id", None)
+    _validate_animal(conn, animal_id)
+
+    fr_id = str(uuid.uuid4())
+    conn.execute("""
+        INSERT INTO agricultureclaw_feeding_record (
+            id, animal_id, feed_date, feed_type, quantity, unit, cost, company_id
+        ) VALUES (?,?,?,?,?,?,?,?)
+    """, (
+        fr_id, animal_id,
+        getattr(args, "feed_date", None),
+        getattr(args, "feed_type", None),
+        getattr(args, "quantity", None),
+        getattr(args, "unit", None),
+        getattr(args, "cost", None),
+        args.company_id,
+    ))
+    audit(conn, SKILL, "agri-add-feeding-record", "agricultureclaw_feeding_record", fr_id,
+          new_values={"animal_id": animal_id})
+    conn.commit()
+    ok({"id": fr_id, "animal_id": animal_id})
+
+
+# ===========================================================================
+# 8. list-feeding-records
+# ===========================================================================
+def list_feeding_records(conn, args):
+    where, params = ["1=1"], []
+    if getattr(args, "animal_id", None):
+        where.append("animal_id = ?")
+        params.append(args.animal_id)
+    if getattr(args, "company_id", None):
+        where.append("company_id = ?")
+        params.append(args.company_id)
+
+    where_sql = " AND ".join(where)
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM agricultureclaw_feeding_record WHERE {where_sql}", params
+    ).fetchone()[0]
+    params.extend([args.limit, args.offset])
+    rows = conn.execute(
+        f"SELECT * FROM agricultureclaw_feeding_record WHERE {where_sql} ORDER BY feed_date DESC LIMIT ? OFFSET ?",
+        params
+    ).fetchall()
+    ok({
+        "rows": [row_to_dict(r) for r in rows],
+        "total_count": total, "limit": args.limit, "offset": args.offset,
+        "has_more": (args.offset + args.limit) < total,
+    })
+
+
+# ===========================================================================
+# 9. add-weight-record
+# ===========================================================================
+def add_weight_record(conn, args):
+    _validate_company(conn, args.company_id)
+    animal_id = getattr(args, "animal_id", None)
+    _validate_animal(conn, animal_id)
+
+    weight = getattr(args, "weight", None)
+    if not weight:
+        err("--weight is required")
+
+    wr_id = str(uuid.uuid4())
+    conn.execute("""
+        INSERT INTO agricultureclaw_weight_record (
+            id, animal_id, weigh_date, weight, unit, notes, company_id
+        ) VALUES (?,?,?,?,?,?,?)
+    """, (
+        wr_id, animal_id,
+        getattr(args, "weigh_date", None),
+        weight,
+        getattr(args, "unit", None) or "lbs",
+        getattr(args, "notes", None),
+        args.company_id,
+    ))
+
+    # Update current_weight on the animal
+    conn.execute(
+        "UPDATE agricultureclaw_animal SET current_weight = ?, updated_at = ? WHERE id = ?",
+        (weight, _now_iso(), animal_id)
+    )
+
+    audit(conn, SKILL, "agri-add-weight-record", "agricultureclaw_weight_record", wr_id,
+          new_values={"animal_id": animal_id, "weight": weight})
+    conn.commit()
+    ok({"id": wr_id, "animal_id": animal_id, "weight": weight})
+
+
+# ===========================================================================
+# 10. herd-summary-report
+# ===========================================================================
+def herd_summary_report(conn, args):
+    where, params = ["1=1"], []
+    if getattr(args, "company_id", None):
+        where.append("company_id = ?")
+        params.append(args.company_id)
+
+    where_sql = " AND ".join(where)
+
+    # Count by species
+    by_species = conn.execute(f"""
+        SELECT species, animal_status, COUNT(*) as cnt
+        FROM agricultureclaw_animal WHERE {where_sql}
+        GROUP BY species, animal_status
+    """, params).fetchall()
+
+    total_animals = conn.execute(
+        f"SELECT COUNT(*) FROM agricultureclaw_animal WHERE {where_sql}", params
+    ).fetchone()[0]
+
+    active_animals = conn.execute(
+        f"SELECT COUNT(*) FROM agricultureclaw_animal WHERE {where_sql} AND animal_status = 'active'", params
+    ).fetchone()[0]
+
+    total_health = conn.execute(
+        f"SELECT COUNT(*) FROM agricultureclaw_health_record WHERE {where_sql}", params
+    ).fetchone()[0]
+
+    ok({
+        "total_animals": total_animals,
+        "active_animals": active_animals,
+        "total_health_records": total_health,
+        "by_species_status": [row_to_dict(r) for r in by_species],
+    })
+
+
+# ---------------------------------------------------------------------------
+# Action registry
+# ---------------------------------------------------------------------------
+ACTIONS = {
+    "agri-add-animal": add_animal,
+    "agri-update-animal": update_animal,
+    "agri-get-animal": get_animal,
+    "agri-list-animals": list_animals,
+    "agri-add-health-record": add_health_record,
+    "agri-list-health-records": list_health_records,
+    "agri-add-feeding-record": add_feeding_record,
+    "agri-list-feeding-records": list_feeding_records,
+    "agri-add-weight-record": add_weight_record,
+    "agri-herd-summary-report": herd_summary_report,
+}
