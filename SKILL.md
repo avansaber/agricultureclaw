@@ -4,7 +4,7 @@ version: 1.0.0
 description: Agriculture Management -- land parcels, crop planning, field operations, harvest tracking, livestock management, and cooperative accounting. 80 actions for full-cycle farm management. Built on ERPClaw foundation.
 author: AvanSaber / Nikhil Jathar
 homepage: https://www.erpclaw.ai
-source: https://github.com/avansaber/erpclaw
+source: https://github.com/avansaber/agricultureclaw
 tier: 4
 category: erp
 requires: [erpclaw-setup]
