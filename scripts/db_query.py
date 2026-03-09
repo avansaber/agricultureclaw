@@ -2,7 +2,7 @@
 """AgricultureClaw -- db_query.py (unified router)
 
 Agriculture management: land, crops, field operations, harvest, livestock, cooperative.
-All 63 actions are routed through this single entry point.
+All 67 actions are routed through this single entry point.
 
 Usage: python3 db_query.py --action <action-name> [--flags ...]
 Output: JSON to stdout, exit 0 on success, exit 1 on error.
@@ -224,6 +224,14 @@ def main():
     parser.add_argument("--total-value")
     parser.add_argument("--members-count", type=int)
     parser.add_argument("--pool-status")
+
+    # GL account fields (for commodity sale posting)
+    parser.add_argument("--revenue-account-id")
+    parser.add_argument("--receivable-account-id")
+    parser.add_argument("--cogs-account-id")
+    parser.add_argument("--inventory-account-id")
+    parser.add_argument("--cost-center-id")
+    parser.add_argument("--cogs-amount")
 
     # Pagination
     parser.add_argument("--limit", type=int, default=20)

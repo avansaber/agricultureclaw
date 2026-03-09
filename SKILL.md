@@ -2,12 +2,12 @@
 name: agricultureclaw
 version: 1.0.0
 description: Agriculture Management -- land parcels, crop planning, field operations, harvest tracking, livestock management, and cooperative accounting. 80 actions for full-cycle farm management. Built on ERPClaw foundation.
-author: AvanSaber / Nikhil Jathar
-homepage: https://www.erpclaw.ai
+author: AvanSaber
+homepage: https://github.com/avansaber/agricultureclaw
 source: https://github.com/avansaber/agricultureclaw
 tier: 4
-category: erp
-requires: [erpclaw-setup]
+category: agriculture
+requires: [erpclaw]
 database: ~/.openclaw/erpclaw/data.sqlite
 user-invocable: true
 tags: [erpclaw, agriculture, farming, livestock, crops, harvest, cooperative, field-operations, land-management]
@@ -26,7 +26,7 @@ SQL with full audit trails.
 ## Security Model
 
 - **Local-only**: All data stored in `~/.openclaw/erpclaw/data.sqlite`
-- **No credentials required**: Uses erpclaw_lib shared library (installed by erpclaw-setup)
+- **No credentials required**: Uses erpclaw_lib shared library (installed by erpclaw)
 - **SQL injection safe**: All queries use parameterized statements
 - **Zero network calls**: No external API calls, no telemetry, no cloud dependencies
 - **Immutable audit trail**: All actions write to audit_log
@@ -41,7 +41,7 @@ cooperative, delivery ticket, pool account, soil test, chemical application.
 
 If the database does not exist or you see "no such table" errors:
 ```
-python3 {baseDir}/../erpclaw-setup/scripts/db_query.py --action initialize-database
+python3 {baseDir}/../erpclaw/scripts/erpclaw-setup/db_query.py --action initialize-database
 python3 {baseDir}/init_db.py
 python3 {baseDir}/scripts/db_query.py --action status
 ```

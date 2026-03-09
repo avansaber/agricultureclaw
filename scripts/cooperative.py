@@ -1,24 +1,31 @@
 """AgricultureClaw -- Cooperative management domain module.
 
-Actions for cooperative members, delivery tickets, and pool accounts (3 tables, 8 actions).
+Actions for cooperative members, delivery tickets, and pool accounts (3 tables, 10 actions).
 Imported by db_query.py (unified router).
 """
 import os
 import sys
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 try:
     sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
     from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
+    from erpclaw_lib.decimal_utils import to_decimal, round_currency
 
     ENTITY_PREFIXES.setdefault("coop_member", "COOP-")
     ENTITY_PREFIXES.setdefault("delivery_ticket", "DT-")
 except ImportError:
     pass
+
+try:
+    from erpclaw_lib.gl_posting import insert_gl_entries, reverse_gl_entries
+    HAS_GL = True
+except ImportError:
+    HAS_GL = False
 
 SKILL = "agricultureclaw"
 
@@ -135,8 +142,11 @@ def add_delivery_ticket(conn, args):
         INSERT INTO agricultureclaw_delivery_ticket (
             id, naming_series, member_id, delivery_date, commodity,
             gross_weight, tare_weight, net_weight, moisture, grade,
-            price_per_unit, total_amount, company_id
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            price_per_unit, total_amount, ticket_status,
+            revenue_account_id, receivable_account_id,
+            cogs_account_id, inventory_account_id, cost_center_id,
+            company_id
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         dt_id, naming, member_id,
         getattr(args, "delivery_date", None),
@@ -148,6 +158,12 @@ def add_delivery_ticket(conn, args):
         getattr(args, "grade", None),
         price_per_unit,
         total_amount,
+        "draft",
+        getattr(args, "revenue_account_id", None),
+        getattr(args, "receivable_account_id", None),
+        getattr(args, "cogs_account_id", None),
+        getattr(args, "inventory_account_id", None),
+        getattr(args, "cost_center_id", None),
         args.company_id,
     ))
     audit(conn, SKILL, "agri-add-delivery-ticket", "agricultureclaw_delivery_ticket", dt_id,
@@ -320,6 +336,205 @@ def cooperative_summary_report(conn, args):
     })
 
 
+# ===========================================================================
+# 9. submit-delivery-ticket  (GL posting for commodity sale)
+# ===========================================================================
+def submit_delivery_ticket(conn, args):
+    """Submit a delivery ticket: validate, post GL entries, mark submitted.
+
+    GL pattern:
+      Primary set:  DR Receivable, CR Agricultural Revenue
+      COGS set:     DR Agricultural COGS, CR Inventory (optional, if both accounts given)
+
+    GL is OPTIONAL -- if accounts not configured, ticket is still submitted
+    without GL entries.
+    """
+    dt_id = getattr(args, "id", None)
+    if not dt_id:
+        err("--id is required")
+
+    ticket = conn.execute(
+        "SELECT * FROM agricultureclaw_delivery_ticket WHERE id = ?", (dt_id,)
+    ).fetchone()
+    if not ticket:
+        err(f"Delivery ticket {dt_id} not found")
+
+    if ticket["ticket_status"] != "draft":
+        err(f"Delivery ticket {dt_id} is already '{ticket['ticket_status']}' -- only draft tickets can be submitted")
+
+    total_amount = ticket["total_amount"]
+    if not total_amount or to_decimal(total_amount) <= Decimal("0"):
+        err("Cannot submit: total_amount must be > 0. Set price_per_unit and net_weight first.")
+
+    amount = to_decimal(total_amount)
+    posting_date = ticket["delivery_date"] or _now_iso()[:10]
+    company_id = ticket["company_id"]
+
+    # Allow override from args (e.g., user adds accounts at submit time)
+    revenue_account_id = getattr(args, "revenue_account_id", None) or ticket["revenue_account_id"]
+    receivable_account_id = getattr(args, "receivable_account_id", None) or ticket["receivable_account_id"]
+    cogs_account_id = getattr(args, "cogs_account_id", None) or ticket["cogs_account_id"]
+    inventory_account_id = getattr(args, "inventory_account_id", None) or ticket["inventory_account_id"]
+    cost_center_id = getattr(args, "cost_center_id", None) or ticket["cost_center_id"]
+
+    # Persist any account overrides
+    conn.execute("""
+        UPDATE agricultureclaw_delivery_ticket
+        SET revenue_account_id = ?, receivable_account_id = ?,
+            cogs_account_id = ?, inventory_account_id = ?, cost_center_id = ?
+        WHERE id = ?
+    """, (revenue_account_id, receivable_account_id,
+          cogs_account_id, inventory_account_id, cost_center_id, dt_id))
+
+    all_gl_ids = []
+
+    # --- Primary GL: Revenue recognition ---
+    if HAS_GL and revenue_account_id and receivable_account_id:
+        try:
+            primary_entries = [
+                {
+                    "account_id": receivable_account_id,
+                    "debit": str(round_currency(amount)),
+                    "credit": "0",
+                    "party_type": "customer",
+                    "party_id": ticket["member_id"],
+                },
+                {
+                    "account_id": revenue_account_id,
+                    "debit": "0",
+                    "credit": str(round_currency(amount)),
+                    "cost_center_id": cost_center_id,
+                },
+            ]
+            gl_ids = insert_gl_entries(
+                conn, primary_entries,
+                voucher_type="Commodity Sale",
+                voucher_id=dt_id,
+                posting_date=posting_date,
+                company_id=company_id,
+                remarks=f"Commodity delivery ticket {ticket['naming_series'] or dt_id}",
+                entry_set="primary",
+            )
+            all_gl_ids.extend(gl_ids)
+        except (ValueError, Exception) as e:
+            # GL posting failed -- still allow submit but warn
+            sys.stderr.write(f"[{SKILL}] GL primary posting skipped: {e}\n")
+
+    # --- COGS GL: Cost of goods sold (optional) ---
+    if HAS_GL and cogs_account_id and inventory_account_id:
+        # Use total_amount as COGS proxy -- in a full system this would be
+        # the actual inventory cost, but for agriculture the delivery ticket
+        # total_amount represents the commodity value at market price.
+        # Farms using actual costing can override via --cogs-amount.
+        cogs_amount_raw = getattr(args, "cogs_amount", None)
+        cogs_amount = to_decimal(cogs_amount_raw) if cogs_amount_raw else amount
+        if cogs_amount > Decimal("0"):
+            try:
+                cogs_entries = [
+                    {
+                        "account_id": cogs_account_id,
+                        "debit": str(round_currency(cogs_amount)),
+                        "credit": "0",
+                        "cost_center_id": cost_center_id,
+                    },
+                    {
+                        "account_id": inventory_account_id,
+                        "debit": "0",
+                        "credit": str(round_currency(cogs_amount)),
+                    },
+                ]
+                cogs_gl_ids = insert_gl_entries(
+                    conn, cogs_entries,
+                    voucher_type="Commodity Sale",
+                    voucher_id=dt_id,
+                    posting_date=posting_date,
+                    company_id=company_id,
+                    remarks=f"COGS for delivery ticket {ticket['naming_series'] or dt_id}",
+                    entry_set="cogs",
+                )
+                all_gl_ids.extend(cogs_gl_ids)
+            except (ValueError, Exception) as e:
+                sys.stderr.write(f"[{SKILL}] GL COGS posting skipped: {e}\n")
+
+    # Mark submitted + store GL entry IDs
+    gl_ids_str = ",".join(all_gl_ids) if all_gl_ids else None
+    conn.execute("""
+        UPDATE agricultureclaw_delivery_ticket
+        SET ticket_status = 'submitted', gl_entry_ids = ?
+        WHERE id = ?
+    """, (gl_ids_str, dt_id))
+
+    audit(conn, SKILL, "agri-submit-delivery-ticket", "agricultureclaw_delivery_ticket", dt_id,
+          new_values={"ticket_status": "submitted", "gl_entry_count": len(all_gl_ids)})
+    conn.commit()
+
+    result = {
+        "id": dt_id, "ticket_status": "submitted",
+        "total_amount": str(amount), "posting_date": posting_date,
+    }
+    if all_gl_ids:
+        result["gl_entry_ids"] = all_gl_ids
+        result["gl_entry_count"] = len(all_gl_ids)
+    else:
+        result["gl_note"] = "No GL entries posted (accounts not configured or GL module unavailable)"
+    ok(result)
+
+
+# ===========================================================================
+# 10. cancel-delivery-ticket  (GL reversal)
+# ===========================================================================
+def cancel_delivery_ticket(conn, args):
+    """Cancel a submitted delivery ticket -- reverses GL entries if any."""
+    dt_id = getattr(args, "id", None)
+    if not dt_id:
+        err("--id is required")
+
+    ticket = conn.execute(
+        "SELECT * FROM agricultureclaw_delivery_ticket WHERE id = ?", (dt_id,)
+    ).fetchone()
+    if not ticket:
+        err(f"Delivery ticket {dt_id} not found")
+
+    if ticket["ticket_status"] == "cancelled":
+        err(f"Delivery ticket {dt_id} is already cancelled")
+    if ticket["ticket_status"] == "draft":
+        err(f"Delivery ticket {dt_id} is still in draft -- delete it instead of cancelling")
+
+    posting_date = ticket["delivery_date"] or _now_iso()[:10]
+    reversal_ids = []
+
+    # Reverse GL entries if they exist
+    if HAS_GL and ticket["gl_entry_ids"]:
+        try:
+            # Reverse primary entries
+            try:
+                primary_rev = reverse_gl_entries(
+                    conn, voucher_type="Commodity Sale",
+                    voucher_id=dt_id, posting_date=posting_date,
+                )
+                reversal_ids.extend(primary_rev)
+            except ValueError:
+                pass  # No primary entries to reverse
+
+        except Exception as e:
+            sys.stderr.write(f"[{SKILL}] GL reversal error: {e}\n")
+
+    conn.execute("""
+        UPDATE agricultureclaw_delivery_ticket
+        SET ticket_status = 'cancelled'
+        WHERE id = ?
+    """, (dt_id,))
+
+    audit(conn, SKILL, "agri-cancel-delivery-ticket", "agricultureclaw_delivery_ticket", dt_id,
+          new_values={"ticket_status": "cancelled", "reversal_count": len(reversal_ids)})
+    conn.commit()
+
+    result = {"id": dt_id, "ticket_status": "cancelled"}
+    if reversal_ids:
+        result["reversal_gl_entry_ids"] = reversal_ids
+    ok(result)
+
+
 # ---------------------------------------------------------------------------
 # Action registry
 # ---------------------------------------------------------------------------
@@ -328,6 +543,8 @@ ACTIONS = {
     "agri-list-coop-members": list_coop_members,
     "agri-add-delivery-ticket": add_delivery_ticket,
     "agri-list-delivery-tickets": list_delivery_tickets,
+    "agri-submit-delivery-ticket": submit_delivery_ticket,
+    "agri-cancel-delivery-ticket": cancel_delivery_ticket,
     "agri-calculate-patronage": calculate_patronage,
     "agri-add-pool-account": add_pool_account,
     "agri-list-pool-accounts": list_pool_accounts,

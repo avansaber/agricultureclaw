@@ -316,6 +316,12 @@ def create_agricultureclaw_tables(db_path=None):
             storage_bin_id  TEXT,
             market_price    TEXT,
             revenue         TEXT,
+            sale_status     TEXT NOT NULL DEFAULT 'draft'
+                            CHECK(sale_status IN ('draft','submitted','cancelled')),
+            revenue_account_id TEXT,
+            receivable_account_id TEXT,
+            cost_center_id  TEXT,
+            gl_entry_ids    TEXT,
             company_id      TEXT NOT NULL REFERENCES company(id),
             created_at      TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
@@ -503,6 +509,14 @@ def create_agricultureclaw_tables(db_path=None):
             grade           TEXT,
             price_per_unit  TEXT,
             total_amount    TEXT,
+            ticket_status   TEXT NOT NULL DEFAULT 'draft'
+                            CHECK(ticket_status IN ('draft','submitted','cancelled')),
+            revenue_account_id    TEXT,
+            receivable_account_id TEXT,
+            cogs_account_id       TEXT,
+            inventory_account_id  TEXT,
+            cost_center_id        TEXT,
+            gl_entry_ids    TEXT,
             company_id      TEXT NOT NULL REFERENCES company(id),
             created_at      TEXT NOT NULL DEFAULT (datetime('now'))
         )

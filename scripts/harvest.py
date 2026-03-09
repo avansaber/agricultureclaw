@@ -1,23 +1,30 @@
 """AgricultureClaw -- Harvest management domain module.
 
-Actions for harvest records, storage bins, quality grades, and reports (3 tables, 10 actions).
+Actions for harvest records, storage bins, quality grades, and reports (3 tables, 12 actions).
 Imported by db_query.py (unified router).
 """
 import os
 import sys
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 try:
     sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
     from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
+    from erpclaw_lib.decimal_utils import to_decimal, round_currency
 
     ENTITY_PREFIXES.setdefault("harvest_record", "HRV-")
 except ImportError:
     pass
+
+try:
+    from erpclaw_lib.gl_posting import insert_gl_entries, reverse_gl_entries
+    HAS_GL = True
+except ImportError:
+    HAS_GL = False
 
 SKILL = "agricultureclaw"
 
@@ -68,9 +75,10 @@ def add_harvest_record(conn, args):
         INSERT INTO agricultureclaw_harvest_record (
             id, naming_series, planting_plan_id, parcel_id, harvest_date,
             yield_amount, yield_unit, moisture_content, quality_grade,
-            storage_bin_id, market_price, revenue, company_id,
-            created_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            storage_bin_id, market_price, revenue, sale_status,
+            revenue_account_id, receivable_account_id, cost_center_id,
+            company_id, created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         hr_id, naming, planting_plan_id, parcel_id,
         getattr(args, "harvest_date", None),
@@ -81,6 +89,10 @@ def add_harvest_record(conn, args):
         storage_bin_id,
         getattr(args, "market_price", None),
         getattr(args, "revenue", None),
+        "draft",
+        getattr(args, "revenue_account_id", None),
+        getattr(args, "receivable_account_id", None),
+        getattr(args, "cost_center_id", None),
         args.company_id, now, now,
     ))
     audit(conn, SKILL, "agri-add-harvest-record", "agricultureclaw_harvest_record", hr_id,
@@ -355,6 +367,156 @@ def crop_profitability_report(conn, args):
     })
 
 
+# ===========================================================================
+# 11. submit-harvest-sale  (GL posting for direct harvest sale)
+# ===========================================================================
+def submit_harvest_sale(conn, args):
+    """Submit a harvest record as a sale: validate revenue, post GL entries.
+
+    GL pattern:
+      DR Receivable (or Cash)    for revenue amount
+      CR Agricultural Revenue    for revenue amount
+
+    GL is OPTIONAL -- if accounts not configured, record is still
+    submitted without GL entries.
+    """
+    hr_id = getattr(args, "id", None)
+    if not hr_id:
+        err("--id is required")
+
+    record = conn.execute(
+        "SELECT * FROM agricultureclaw_harvest_record WHERE id = ?", (hr_id,)
+    ).fetchone()
+    if not record:
+        err(f"Harvest record {hr_id} not found")
+
+    if record["sale_status"] != "draft":
+        err(f"Harvest record {hr_id} is already '{record['sale_status']}' -- only draft records can be submitted")
+
+    revenue_val = record["revenue"]
+    if not revenue_val or to_decimal(revenue_val) <= Decimal("0"):
+        err("Cannot submit: revenue must be > 0. Set revenue or market_price * yield_amount first.")
+
+    amount = to_decimal(revenue_val)
+    posting_date = record["harvest_date"] or _now_iso()[:10]
+    company_id = record["company_id"]
+
+    # Allow override from args
+    revenue_account_id = getattr(args, "revenue_account_id", None) or record["revenue_account_id"]
+    receivable_account_id = getattr(args, "receivable_account_id", None) or record["receivable_account_id"]
+    cost_center_id = getattr(args, "cost_center_id", None) or record["cost_center_id"]
+
+    # Persist any account overrides
+    conn.execute("""
+        UPDATE agricultureclaw_harvest_record
+        SET revenue_account_id = ?, receivable_account_id = ?, cost_center_id = ?,
+            updated_at = ?
+        WHERE id = ?
+    """, (revenue_account_id, receivable_account_id, cost_center_id, _now_iso(), hr_id))
+
+    all_gl_ids = []
+
+    if HAS_GL and revenue_account_id and receivable_account_id:
+        try:
+            entries = [
+                {
+                    "account_id": receivable_account_id,
+                    "debit": str(round_currency(amount)),
+                    "credit": "0",
+                },
+                {
+                    "account_id": revenue_account_id,
+                    "debit": "0",
+                    "credit": str(round_currency(amount)),
+                    "cost_center_id": cost_center_id,
+                },
+            ]
+            gl_ids = insert_gl_entries(
+                conn, entries,
+                voucher_type="Harvest Sale",
+                voucher_id=hr_id,
+                posting_date=posting_date,
+                company_id=company_id,
+                remarks=f"Harvest sale {record['naming_series'] or hr_id}",
+                entry_set="primary",
+            )
+            all_gl_ids.extend(gl_ids)
+        except (ValueError, Exception) as e:
+            sys.stderr.write(f"[{SKILL}] GL posting skipped for harvest sale: {e}\n")
+
+    # Mark submitted
+    gl_ids_str = ",".join(all_gl_ids) if all_gl_ids else None
+    conn.execute("""
+        UPDATE agricultureclaw_harvest_record
+        SET sale_status = 'submitted', gl_entry_ids = ?, updated_at = ?
+        WHERE id = ?
+    """, (gl_ids_str, _now_iso(), hr_id))
+
+    audit(conn, SKILL, "agri-submit-harvest-sale", "agricultureclaw_harvest_record", hr_id,
+          new_values={"sale_status": "submitted", "gl_entry_count": len(all_gl_ids)})
+    conn.commit()
+
+    result = {
+        "id": hr_id, "sale_status": "submitted",
+        "revenue": str(amount), "posting_date": posting_date,
+    }
+    if all_gl_ids:
+        result["gl_entry_ids"] = all_gl_ids
+        result["gl_entry_count"] = len(all_gl_ids)
+    else:
+        result["gl_note"] = "No GL entries posted (accounts not configured or GL module unavailable)"
+    ok(result)
+
+
+# ===========================================================================
+# 12. cancel-harvest-sale  (GL reversal)
+# ===========================================================================
+def cancel_harvest_sale(conn, args):
+    """Cancel a submitted harvest sale -- reverses GL entries if any."""
+    hr_id = getattr(args, "id", None)
+    if not hr_id:
+        err("--id is required")
+
+    record = conn.execute(
+        "SELECT * FROM agricultureclaw_harvest_record WHERE id = ?", (hr_id,)
+    ).fetchone()
+    if not record:
+        err(f"Harvest record {hr_id} not found")
+
+    if record["sale_status"] == "cancelled":
+        err(f"Harvest record {hr_id} is already cancelled")
+    if record["sale_status"] == "draft":
+        err(f"Harvest record {hr_id} is still in draft -- no sale to cancel")
+
+    posting_date = record["harvest_date"] or _now_iso()[:10]
+    reversal_ids = []
+
+    if HAS_GL and record["gl_entry_ids"]:
+        try:
+            rev_ids = reverse_gl_entries(
+                conn, voucher_type="Harvest Sale",
+                voucher_id=hr_id, posting_date=posting_date,
+            )
+            reversal_ids.extend(rev_ids)
+        except (ValueError, Exception) as e:
+            sys.stderr.write(f"[{SKILL}] GL reversal error for harvest sale: {e}\n")
+
+    conn.execute("""
+        UPDATE agricultureclaw_harvest_record
+        SET sale_status = 'cancelled', updated_at = ?
+        WHERE id = ?
+    """, (_now_iso(), hr_id))
+
+    audit(conn, SKILL, "agri-cancel-harvest-sale", "agricultureclaw_harvest_record", hr_id,
+          new_values={"sale_status": "cancelled", "reversal_count": len(reversal_ids)})
+    conn.commit()
+
+    result = {"id": hr_id, "sale_status": "cancelled"}
+    if reversal_ids:
+        result["reversal_gl_entry_ids"] = reversal_ids
+    ok(result)
+
+
 # ---------------------------------------------------------------------------
 # Action registry
 # ---------------------------------------------------------------------------
@@ -366,6 +528,8 @@ ACTIONS = {
     "agri-list-storage-bins": list_storage_bins,
     "agri-add-quality-grade": add_quality_grade,
     "agri-list-quality-grades": list_quality_grades,
+    "agri-submit-harvest-sale": submit_harvest_sale,
+    "agri-cancel-harvest-sale": cancel_harvest_sale,
     "agri-yield-analysis-report": yield_analysis_report,
     "agri-harvest-summary": harvest_summary,
     "agri-crop-profitability-report": crop_profitability_report,

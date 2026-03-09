@@ -1,0 +1,120 @@
+ocui_version: "1.0"
+skill: agricultureclaw
+skill_version: "1.0.0"
+display_name: Agriculture Management
+icon: wheat
+color: "#16a34a"
+default_entity: parcel
+
+domains:
+  - key: land
+    label: Land
+    entities: [parcel, soil_test, land_use_record]
+  - key: crops
+    label: Crops
+    entities: [crop_type, planting_plan, growth_stage, seed_lot]
+  - key: fieldops
+    label: Field Operations
+    entities: [field_operation, scouting_report, irrigation_log, chemical_application]
+  - key: harvest
+    label: Harvest
+    entities: [harvest_record, storage_bin, quality_grade]
+  - key: livestock
+    label: Livestock
+    entities: [animal, health_record, feeding_record, weight_record]
+  - key: cooperative
+    label: Cooperative
+    entities: [coop_member, delivery_ticket, pool_account]
+
+dashboard:
+  kpis:
+    - key: total_parcels
+      label: "Parcels"
+      type: count
+      action: agri-list-parcels
+      icon: map-pin
+      drill_action: agri-list-parcels
+    - key: active_planting_plans
+      label: "Planting Plans"
+      type: count
+      action: agri-list-planting-plans
+      icon: sprout
+      drill_action: agri-list-planting-plans
+    - key: total_animals
+      label: "Animals"
+      type: count
+      action: agri-list-animals
+      icon: beef
+      drill_action: agri-list-animals
+    - key: pending_field_ops
+      label: "Pending Field Ops"
+      type: count
+      action: agri-list-field-operations
+      filter: { status: planned }
+      severity: warning
+      icon: tractor
+      drill_action: agri-list-field-operations
+      drill_filter: { status: planned }
+    - key: coop_members
+      label: "Co-op Members"
+      type: count
+      action: agri-list-coop-members
+      icon: users
+      drill_action: agri-list-coop-members
+  quick_actions:
+    - action: agri-add-parcel
+      label: "New Parcel"
+      icon: map-pin
+    - action: agri-add-planting-plan
+      label: "New Planting Plan"
+      icon: sprout
+    - action: agri-add-field-operation
+      label: "New Field Operation"
+      icon: tractor
+    - action: agri-add-harvest-record
+      label: "Record Harvest"
+      icon: wheat
+    - action: agri-add-animal
+      label: "New Animal"
+      icon: beef
+
+workflows:
+  - after: agri-add-parcel
+    suggest:
+      - action: agri-add-soil-test
+        label: "Record soil test"
+        pass: { parcel-id: id }
+      - action: agri-add-planting-plan
+        label: "Create planting plan"
+        pass: { parcel-id: id }
+  - after: agri-add-planting-plan
+    suggest:
+      - action: agri-add-growth-stage
+        label: "Record growth stage"
+        pass: { planting-plan-id: id }
+      - action: agri-add-field-operation
+        label: "Schedule field operation"
+        pass: { parcel-id: parcel_id }
+  - after: agri-complete-field-operation
+    suggest:
+      - action: agri-add-scouting-report
+        label: "Record scouting report"
+        pass: { parcel-id: parcel_id }
+  - after: agri-add-animal
+    suggest:
+      - action: agri-add-health-record
+        label: "Record health event"
+        pass: { animal-id: id }
+      - action: agri-add-weight-record
+        label: "Record weight"
+        pass: { animal-id: id }
+  - after: agri-add-harvest-record
+    suggest:
+      - action: agri-add-quality-grade
+        label: "Grade harvest sample"
+        pass: { parcel-id: parcel_id }
+  - after: agri-add-coop-member
+    suggest:
+      - action: agri-add-delivery-ticket
+        label: "Record delivery"
+        pass: { member-id: id }
