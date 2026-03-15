@@ -15,6 +15,7 @@ try:
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
     from erpclaw_lib.decimal_utils import to_decimal, round_currency
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, update_row
 
     ENTITY_PREFIXES.setdefault("coop_member", "COOP-")
     ENTITY_PREFIXES.setdefault("delivery_ticket", "DT-")
@@ -38,14 +39,14 @@ VALID_POOL_STATUS = ("open", "closed", "distributed")
 def _validate_company(conn, company_id):
     if not company_id:
         err("--company-id is required")
-    if not conn.execute("SELECT id FROM company WHERE id = ?", (company_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("company")).select(Field("id")).where(Field("id") == P()).get_sql(), (company_id,)).fetchone():
         err(f"Company {company_id} not found")
 
 
 def _validate_member(conn, member_id):
     if not member_id:
         err("--member-id is required")
-    if not conn.execute("SELECT id FROM agricultureclaw_coop_member WHERE id = ?", (member_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("agricultureclaw_coop_member")).select(Field("id")).where(Field("id") == P()).get_sql(), (member_id,)).fetchone():
         err(f"Co-op member {member_id} not found")
 
 
@@ -63,12 +64,8 @@ def add_coop_member(conn, args):
     naming = get_next_name(conn, "coop_member", company_id=args.company_id)
     now = _now_iso()
 
-    conn.execute("""
-        INSERT INTO agricultureclaw_coop_member (
-            id, naming_series, name, member_number, shares, join_date,
-            member_status, company_id, created_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_coop_member", {"id": P(), "naming_series": P(), "name": P(), "member_number": P(), "shares": P(), "join_date": P(), "member_status": P(), "company_id": P(), "created_at": P(), "updated_at": P()})
+    conn.execute(sql, (
         cm_id, naming, name,
         getattr(args, "member_number", None),
         getattr(args, "shares", None),
@@ -138,16 +135,8 @@ def add_delivery_ticket(conn, args):
     if net_weight and price_per_unit and not total_amount:
         total_amount = str(Decimal(net_weight) * Decimal(price_per_unit))
 
-    conn.execute("""
-        INSERT INTO agricultureclaw_delivery_ticket (
-            id, naming_series, member_id, delivery_date, commodity,
-            gross_weight, tare_weight, net_weight, moisture, grade,
-            price_per_unit, total_amount, ticket_status,
-            revenue_account_id, receivable_account_id,
-            cogs_account_id, inventory_account_id, cost_center_id,
-            company_id
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_delivery_ticket", {"id": P(), "naming_series": P(), "member_id": P(), "delivery_date": P(), "commodity": P(), "gross_weight": P(), "tare_weight": P(), "net_weight": P(), "moisture": P(), "grade": P(), "price_per_unit": P(), "total_amount": P(), "ticket_status": P(), "revenue_account_id": P(), "receivable_account_id": P(), "cogs_account_id": P(), "inventory_account_id": P(), "cost_center_id": P(), "company_id": P()})
+    conn.execute(sql, (
         dt_id, naming, member_id,
         getattr(args, "delivery_date", None),
         getattr(args, "commodity", None),
@@ -227,7 +216,7 @@ def calculate_patronage(conn, args):
         if ta:
             total_value += Decimal(ta)
 
-    member = conn.execute("SELECT name FROM agricultureclaw_coop_member WHERE id = ?", (member_id,)).fetchone()
+    member = conn.execute(Q.from_(Table("agricultureclaw_coop_member")).select(Field("name")).where(Field("id") == P()).get_sql(), (member_id,)).fetchone()
 
     ok({
         "member_id": member_id,
@@ -255,12 +244,8 @@ def add_pool_account(conn, args):
     now = _now_iso()
     year_val = getattr(args, "pool_year", None)
 
-    conn.execute("""
-        INSERT INTO agricultureclaw_pool_account (
-            id, name, commodity, pool_year, total_quantity, total_value,
-            members_count, pool_status, company_id, created_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_pool_account", {"id": P(), "name": P(), "commodity": P(), "pool_year": P(), "total_quantity": P(), "total_value": P(), "members_count": P(), "pool_status": P(), "company_id": P(), "created_at": P(), "updated_at": P()})
+    conn.execute(sql, (
         pa_id, name,
         getattr(args, "commodity", None),
         int(year_val) if year_val is not None else None,
@@ -353,9 +338,7 @@ def submit_delivery_ticket(conn, args):
     if not dt_id:
         err("--id is required")
 
-    ticket = conn.execute(
-        "SELECT * FROM agricultureclaw_delivery_ticket WHERE id = ?", (dt_id,)
-    ).fetchone()
+    ticket = conn.execute(Q.from_(Table("agricultureclaw_delivery_ticket")).select(Table("agricultureclaw_delivery_ticket").star).where(Field("id") == P()).get_sql(), (dt_id,)).fetchone()
     if not ticket:
         err(f"Delivery ticket {dt_id} not found")
 
@@ -489,9 +472,7 @@ def cancel_delivery_ticket(conn, args):
     if not dt_id:
         err("--id is required")
 
-    ticket = conn.execute(
-        "SELECT * FROM agricultureclaw_delivery_ticket WHERE id = ?", (dt_id,)
-    ).fetchone()
+    ticket = conn.execute(Q.from_(Table("agricultureclaw_delivery_ticket")).select(Table("agricultureclaw_delivery_ticket").star).where(Field("id") == P()).get_sql(), (dt_id,)).fetchone()
     if not ticket:
         err(f"Delivery ticket {dt_id} not found")
 

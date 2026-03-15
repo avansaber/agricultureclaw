@@ -13,6 +13,7 @@ try:
     from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, update_row
 
     ENTITY_PREFIXES.setdefault("animal", "ANM-")
 except ImportError:
@@ -31,14 +32,14 @@ VALID_HEALTH_TYPES = ("vaccination", "treatment", "examination", "deworming")
 def _validate_company(conn, company_id):
     if not company_id:
         err("--company-id is required")
-    if not conn.execute("SELECT id FROM company WHERE id = ?", (company_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("company")).select(Field("id")).where(Field("id") == P()).get_sql(), (company_id,)).fetchone():
         err(f"Company {company_id} not found")
 
 
 def _validate_animal(conn, animal_id):
     if not animal_id:
         err("--animal-id is required")
-    if not conn.execute("SELECT id FROM agricultureclaw_animal WHERE id = ?", (animal_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("agricultureclaw_animal")).select(Field("id")).where(Field("id") == P()).get_sql(), (animal_id,)).fetchone():
         err(f"Animal {animal_id} not found")
 
 
@@ -63,13 +64,8 @@ def add_animal(conn, args):
     naming = get_next_name(conn, "animal", company_id=args.company_id)
     now = _now_iso()
 
-    conn.execute("""
-        INSERT INTO agricultureclaw_animal (
-            id, naming_series, tag_number, species, breed, birth_date, gender,
-            sire_id, dam_id, purchase_date, purchase_cost, current_weight,
-            animal_status, company_id, created_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_animal", {"id": P(), "naming_series": P(), "tag_number": P(), "species": P(), "breed": P(), "birth_date": P(), "gender": P(), "sire_id": P(), "dam_id": P(), "purchase_date": P(), "purchase_cost": P(), "current_weight": P(), "animal_status": P(), "company_id": P(), "created_at": P(), "updated_at": P()})
+    conn.execute(sql, (
         animal_id, naming,
         getattr(args, "tag_number", None),
         species,
@@ -97,7 +93,7 @@ def update_animal(conn, args):
     animal_id = getattr(args, "id", None)
     if not animal_id:
         err("--id is required")
-    if not conn.execute("SELECT id FROM agricultureclaw_animal WHERE id = ?", (animal_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("agricultureclaw_animal")).select(Field("id")).where(Field("id") == P()).get_sql(), (animal_id,)).fetchone():
         err(f"Animal {animal_id} not found")
 
     updates, params, changed = [], [], []
@@ -148,23 +144,17 @@ def get_animal(conn, args):
     animal_id = getattr(args, "id", None)
     if not animal_id:
         err("--id is required")
-    row = conn.execute("SELECT * FROM agricultureclaw_animal WHERE id = ?", (animal_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("agricultureclaw_animal")).select(Table("agricultureclaw_animal").star).where(Field("id") == P()).get_sql(), (animal_id,)).fetchone()
     if not row:
         err(f"Animal {animal_id} not found")
     data = row_to_dict(row)
 
     # Include health records
-    health = conn.execute(
-        "SELECT * FROM agricultureclaw_health_record WHERE animal_id = ? ORDER BY record_date DESC",
-        (animal_id,)
-    ).fetchall()
+    health = conn.execute(Q.from_(Table("agricultureclaw_health_record")).select(Table("agricultureclaw_health_record").star).where(Field("animal_id") == P()).orderby(Field("record_date"), order=Order.desc).get_sql(), (animal_id,)).fetchall()
     data["health_records"] = [row_to_dict(h) for h in health]
 
     # Include weight records
-    weights = conn.execute(
-        "SELECT * FROM agricultureclaw_weight_record WHERE animal_id = ? ORDER BY weigh_date DESC",
-        (animal_id,)
-    ).fetchall()
+    weights = conn.execute(Q.from_(Table("agricultureclaw_weight_record")).select(Table("agricultureclaw_weight_record").star).where(Field("animal_id") == P()).orderby(Field("weigh_date"), order=Order.desc).get_sql(), (animal_id,)).fetchall()
     data["weight_records"] = [row_to_dict(w) for w in weights]
     ok(data)
 
@@ -218,12 +208,8 @@ def add_health_record(conn, args):
         err(f"Invalid record-type: {record_type}. Must be one of: {', '.join(VALID_HEALTH_TYPES)}")
 
     hr_id = str(uuid.uuid4())
-    conn.execute("""
-        INSERT INTO agricultureclaw_health_record (
-            id, animal_id, record_date, record_type, description,
-            veterinarian, cost, company_id
-        ) VALUES (?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_health_record", {"id": P(), "animal_id": P(), "record_date": P(), "record_type": P(), "description": P(), "veterinarian": P(), "cost": P(), "company_id": P()})
+    conn.execute(sql, (
         hr_id, animal_id,
         getattr(args, "record_date", None),
         record_type,
@@ -278,11 +264,8 @@ def add_feeding_record(conn, args):
     _validate_animal(conn, animal_id)
 
     fr_id = str(uuid.uuid4())
-    conn.execute("""
-        INSERT INTO agricultureclaw_feeding_record (
-            id, animal_id, feed_date, feed_type, quantity, unit, cost, company_id
-        ) VALUES (?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_feeding_record", {"id": P(), "animal_id": P(), "feed_date": P(), "feed_type": P(), "quantity": P(), "unit": P(), "cost": P(), "company_id": P()})
+    conn.execute(sql, (
         fr_id, animal_id,
         getattr(args, "feed_date", None),
         getattr(args, "feed_type", None),
@@ -338,11 +321,8 @@ def add_weight_record(conn, args):
         err("--weight is required")
 
     wr_id = str(uuid.uuid4())
-    conn.execute("""
-        INSERT INTO agricultureclaw_weight_record (
-            id, animal_id, weigh_date, weight, unit, notes, company_id
-        ) VALUES (?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_weight_record", {"id": P(), "animal_id": P(), "weigh_date": P(), "weight": P(), "unit": P(), "notes": P(), "company_id": P()})
+    conn.execute(sql, (
         wr_id, animal_id,
         getattr(args, "weigh_date", None),
         weight,

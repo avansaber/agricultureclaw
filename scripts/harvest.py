@@ -15,6 +15,7 @@ try:
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
     from erpclaw_lib.decimal_utils import to_decimal, round_currency
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, update_row
 
     ENTITY_PREFIXES.setdefault("harvest_record", "HRV-")
 except ImportError:
@@ -37,14 +38,14 @@ VALID_GRADES = ("1", "2", "3", "sample_grade")
 def _validate_company(conn, company_id):
     if not company_id:
         err("--company-id is required")
-    if not conn.execute("SELECT id FROM company WHERE id = ?", (company_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("company")).select(Field("id")).where(Field("id") == P()).get_sql(), (company_id,)).fetchone():
         err(f"Company {company_id} not found")
 
 
 def _validate_parcel(conn, parcel_id):
     if not parcel_id:
         err("--parcel-id is required")
-    if not conn.execute("SELECT id FROM agricultureclaw_parcel WHERE id = ?", (parcel_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("agricultureclaw_parcel")).select(Field("id")).where(Field("id") == P()).get_sql(), (parcel_id,)).fetchone():
         err(f"Parcel {parcel_id} not found")
 
 
@@ -58,12 +59,12 @@ def add_harvest_record(conn, args):
 
     planting_plan_id = getattr(args, "planting_plan_id", None)
     if planting_plan_id:
-        if not conn.execute("SELECT id FROM agricultureclaw_planting_plan WHERE id = ?", (planting_plan_id,)).fetchone():
+        if not conn.execute(Q.from_(Table("agricultureclaw_planting_plan")).select(Field("id")).where(Field("id") == P()).get_sql(), (planting_plan_id,)).fetchone():
             err(f"Planting plan {planting_plan_id} not found")
 
     storage_bin_id = getattr(args, "storage_bin_id", None)
     if storage_bin_id:
-        if not conn.execute("SELECT id FROM agricultureclaw_storage_bin WHERE id = ?", (storage_bin_id,)).fetchone():
+        if not conn.execute(Q.from_(Table("agricultureclaw_storage_bin")).select(Field("id")).where(Field("id") == P()).get_sql(), (storage_bin_id,)).fetchone():
             err(f"Storage bin {storage_bin_id} not found")
 
     hr_id = str(uuid.uuid4())
@@ -71,15 +72,8 @@ def add_harvest_record(conn, args):
     naming = get_next_name(conn, "harvest_record", company_id=args.company_id)
     now = _now_iso()
 
-    conn.execute("""
-        INSERT INTO agricultureclaw_harvest_record (
-            id, naming_series, planting_plan_id, parcel_id, harvest_date,
-            yield_amount, yield_unit, moisture_content, quality_grade,
-            storage_bin_id, market_price, revenue, sale_status,
-            revenue_account_id, receivable_account_id, cost_center_id,
-            company_id, created_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_harvest_record", {"id": P(), "naming_series": P(), "planting_plan_id": P(), "parcel_id": P(), "harvest_date": P(), "yield_amount": P(), "yield_unit": P(), "moisture_content": P(), "quality_grade": P(), "storage_bin_id": P(), "market_price": P(), "revenue": P(), "sale_status": P(), "revenue_account_id": P(), "receivable_account_id": P(), "cost_center_id": P(), "company_id": P(), "created_at": P(), "updated_at": P()})
+    conn.execute(sql, (
         hr_id, naming, planting_plan_id, parcel_id,
         getattr(args, "harvest_date", None),
         getattr(args, "yield_amount", None),
@@ -108,7 +102,7 @@ def update_harvest_record(conn, args):
     hr_id = getattr(args, "id", None)
     if not hr_id:
         err("--id is required")
-    if not conn.execute("SELECT id FROM agricultureclaw_harvest_record WHERE id = ?", (hr_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("agricultureclaw_harvest_record")).select(Field("id")).where(Field("id") == P()).get_sql(), (hr_id,)).fetchone():
         err(f"Harvest record {hr_id} not found")
 
     updates, params, changed = [], [], []
@@ -183,12 +177,8 @@ def add_storage_bin(conn, args):
 
     sb_id = str(uuid.uuid4())
     now = _now_iso()
-    conn.execute("""
-        INSERT INTO agricultureclaw_storage_bin (
-            id, name, bin_type, capacity, current_quantity, crop_type,
-            location, company_id, created_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_storage_bin", {"id": P(), "name": P(), "bin_type": P(), "capacity": P(), "current_quantity": P(), "crop_type": P(), "location": P(), "company_id": P(), "created_at": P(), "updated_at": P()})
+    conn.execute(sql, (
         sb_id, name, bin_type,
         getattr(args, "capacity", None),
         getattr(args, "current_quantity", None) or "0",
@@ -235,7 +225,7 @@ def add_quality_grade(conn, args):
     harvest_id = getattr(args, "harvest_id", None)
     if not harvest_id:
         err("--harvest-id is required")
-    if not conn.execute("SELECT id FROM agricultureclaw_harvest_record WHERE id = ?", (harvest_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("agricultureclaw_harvest_record")).select(Field("id")).where(Field("id") == P()).get_sql(), (harvest_id,)).fetchone():
         err(f"Harvest record {harvest_id} not found")
 
     grade = getattr(args, "grade", None)
@@ -243,12 +233,8 @@ def add_quality_grade(conn, args):
         err(f"Invalid grade: {grade}. Must be one of: {', '.join(VALID_GRADES)}")
 
     qg_id = str(uuid.uuid4())
-    conn.execute("""
-        INSERT INTO agricultureclaw_quality_grade (
-            id, harvest_id, grade, test_weight, foreign_material,
-            damage_pct, notes, company_id
-        ) VALUES (?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_quality_grade", {"id": P(), "harvest_id": P(), "grade": P(), "test_weight": P(), "foreign_material": P(), "damage_pct": P(), "notes": P(), "company_id": P()})
+    conn.execute(sql, (
         qg_id, harvest_id, grade,
         getattr(args, "test_weight", None),
         getattr(args, "foreign_material", None),
@@ -384,9 +370,7 @@ def submit_harvest_sale(conn, args):
     if not hr_id:
         err("--id is required")
 
-    record = conn.execute(
-        "SELECT * FROM agricultureclaw_harvest_record WHERE id = ?", (hr_id,)
-    ).fetchone()
+    record = conn.execute(Q.from_(Table("agricultureclaw_harvest_record")).select(Table("agricultureclaw_harvest_record").star).where(Field("id") == P()).get_sql(), (hr_id,)).fetchone()
     if not record:
         err(f"Harvest record {hr_id} not found")
 
@@ -477,9 +461,7 @@ def cancel_harvest_sale(conn, args):
     if not hr_id:
         err("--id is required")
 
-    record = conn.execute(
-        "SELECT * FROM agricultureclaw_harvest_record WHERE id = ?", (hr_id,)
-    ).fetchone()
+    record = conn.execute(Q.from_(Table("agricultureclaw_harvest_record")).select(Table("agricultureclaw_harvest_record").star).where(Field("id") == P()).get_sql(), (hr_id,)).fetchone()
     if not record:
         err(f"Harvest record {hr_id} not found")
 

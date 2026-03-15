@@ -14,6 +14,7 @@ try:
     from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, update_row
 
     ENTITY_PREFIXES.setdefault("parcel", "PRC-")
 except ImportError:
@@ -30,14 +31,14 @@ VALID_PARCEL_STATUS = ("active", "fallow", "leased", "retired")
 def _validate_company(conn, company_id):
     if not company_id:
         err("--company-id is required")
-    if not conn.execute("SELECT id FROM company WHERE id = ?", (company_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("company")).select(Field("id")).where(Field("id") == P()).get_sql(), (company_id,)).fetchone():
         err(f"Company {company_id} not found")
 
 
 def _validate_parcel(conn, parcel_id):
     if not parcel_id:
         err("--parcel-id is required")
-    if not conn.execute("SELECT id FROM agricultureclaw_parcel WHERE id = ?", (parcel_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("agricultureclaw_parcel")).select(Field("id")).where(Field("id") == P()).get_sql(), (parcel_id,)).fetchone():
         err(f"Parcel {parcel_id} not found")
 
 
@@ -63,13 +64,8 @@ def add_parcel(conn, args):
     naming = get_next_name(conn, "parcel", company_id=args.company_id)
     now = _now_iso()
 
-    conn.execute("""
-        INSERT INTO agricultureclaw_parcel (
-            id, naming_series, name, acreage, gps_lat, gps_lon, soil_type,
-            land_use, owner, lease_info, parcel_status, company_id,
-            created_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_parcel", {"id": P(), "naming_series": P(), "name": P(), "acreage": P(), "gps_lat": P(), "gps_lon": P(), "soil_type": P(), "land_use": P(), "owner": P(), "lease_info": P(), "parcel_status": P(), "company_id": P(), "created_at": P(), "updated_at": P()})
+    conn.execute(sql, (
         parcel_id, naming, name,
         getattr(args, "acreage", None),
         getattr(args, "gps_lat", None),
@@ -94,7 +90,7 @@ def update_parcel(conn, args):
     parcel_id = getattr(args, "id", None)
     if not parcel_id:
         err("--id is required")
-    if not conn.execute("SELECT id FROM agricultureclaw_parcel WHERE id = ?", (parcel_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("agricultureclaw_parcel")).select(Field("id")).where(Field("id") == P()).get_sql(), (parcel_id,)).fetchone():
         err(f"Parcel {parcel_id} not found")
 
     updates, params, changed = [], [], []
@@ -144,23 +140,17 @@ def get_parcel(conn, args):
     parcel_id = getattr(args, "id", None)
     if not parcel_id:
         err("--id is required")
-    row = conn.execute("SELECT * FROM agricultureclaw_parcel WHERE id = ?", (parcel_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("agricultureclaw_parcel")).select(Table("agricultureclaw_parcel").star).where(Field("id") == P()).get_sql(), (parcel_id,)).fetchone()
     if not row:
         err(f"Parcel {parcel_id} not found")
     data = row_to_dict(row)
 
     # Include soil tests
-    soil_tests = conn.execute(
-        "SELECT * FROM agricultureclaw_soil_test WHERE parcel_id = ? ORDER BY test_date DESC",
-        (parcel_id,)
-    ).fetchall()
+    soil_tests = conn.execute(Q.from_(Table("agricultureclaw_soil_test")).select(Table("agricultureclaw_soil_test").star).where(Field("parcel_id") == P()).orderby(Field("test_date"), order=Order.desc).get_sql(), (parcel_id,)).fetchall()
     data["soil_tests"] = [row_to_dict(s) for s in soil_tests]
 
     # Include land use records
-    land_use_recs = conn.execute(
-        "SELECT * FROM agricultureclaw_land_use_record WHERE parcel_id = ? ORDER BY year DESC",
-        (parcel_id,)
-    ).fetchall()
+    land_use_recs = conn.execute(Q.from_(Table("agricultureclaw_land_use_record")).select(Table("agricultureclaw_land_use_record").star).where(Field("parcel_id") == P()).orderby(Field("year"), order=Order.desc).get_sql(), (parcel_id,)).fetchall()
     data["land_use_records"] = [row_to_dict(r) for r in land_use_recs]
     ok(data)
 
@@ -205,12 +195,8 @@ def add_soil_test(conn, args):
     _validate_parcel(conn, parcel_id)
 
     test_id = str(uuid.uuid4())
-    conn.execute("""
-        INSERT INTO agricultureclaw_soil_test (
-            id, parcel_id, test_date, ph, nitrogen, phosphorus, potassium,
-            organic_matter, lab_name, notes, company_id
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_soil_test", {"id": P(), "parcel_id": P(), "test_date": P(), "ph": P(), "nitrogen": P(), "phosphorus": P(), "potassium": P(), "organic_matter": P(), "lab_name": P(), "notes": P(), "company_id": P()})
+    conn.execute(sql, (
         test_id, parcel_id,
         getattr(args, "test_date", None),
         getattr(args, "ph", None),
@@ -266,11 +252,8 @@ def add_land_use_record(conn, args):
 
     rec_id = str(uuid.uuid4())
     year_val = getattr(args, "year", None)
-    conn.execute("""
-        INSERT INTO agricultureclaw_land_use_record (
-            id, parcel_id, season, year, crop_type, notes, company_id
-        ) VALUES (?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_land_use_record", {"id": P(), "parcel_id": P(), "season": P(), "year": P(), "crop_type": P(), "notes": P(), "company_id": P()})
+    conn.execute(sql, (
         rec_id, parcel_id,
         getattr(args, "season", None),
         int(year_val) if year_val is not None else None,
@@ -319,23 +302,15 @@ def parcel_summary(conn, args):
     parcel_id = getattr(args, "id", None)
     if not parcel_id:
         err("--id is required")
-    row = conn.execute("SELECT * FROM agricultureclaw_parcel WHERE id = ?", (parcel_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("agricultureclaw_parcel")).select(Table("agricultureclaw_parcel").star).where(Field("id") == P()).get_sql(), (parcel_id,)).fetchone()
     if not row:
         err(f"Parcel {parcel_id} not found")
     data = row_to_dict(row)
 
-    soil_count = conn.execute(
-        "SELECT COUNT(*) FROM agricultureclaw_soil_test WHERE parcel_id = ?", (parcel_id,)
-    ).fetchone()[0]
-    lur_count = conn.execute(
-        "SELECT COUNT(*) FROM agricultureclaw_land_use_record WHERE parcel_id = ?", (parcel_id,)
-    ).fetchone()[0]
-    op_count = conn.execute(
-        "SELECT COUNT(*) FROM agricultureclaw_field_operation WHERE parcel_id = ?", (parcel_id,)
-    ).fetchone()[0]
-    harvest_count = conn.execute(
-        "SELECT COUNT(*) FROM agricultureclaw_harvest_record WHERE parcel_id = ?", (parcel_id,)
-    ).fetchone()[0]
+    soil_count = conn.execute(Q.from_(Table("agricultureclaw_soil_test")).select(fn.Count("*")).where(Field("parcel_id") == P()).get_sql(), (parcel_id,)).fetchone()[0]
+    lur_count = conn.execute(Q.from_(Table("agricultureclaw_land_use_record")).select(fn.Count("*")).where(Field("parcel_id") == P()).get_sql(), (parcel_id,)).fetchone()[0]
+    op_count = conn.execute(Q.from_(Table("agricultureclaw_field_operation")).select(fn.Count("*")).where(Field("parcel_id") == P()).get_sql(), (parcel_id,)).fetchone()[0]
+    harvest_count = conn.execute(Q.from_(Table("agricultureclaw_harvest_record")).select(fn.Count("*")).where(Field("parcel_id") == P()).get_sql(), (parcel_id,)).fetchone()[0]
 
     data["soil_test_count"] = soil_count
     data["land_use_record_count"] = lur_count

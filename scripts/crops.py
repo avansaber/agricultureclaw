@@ -13,6 +13,7 @@ try:
     from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, update_row
 
     ENTITY_PREFIXES.setdefault("planting_plan", "PP-")
 except ImportError:
@@ -28,21 +29,21 @@ VALID_PLAN_STATUS = ("planned", "active", "harvested", "abandoned")
 def _validate_company(conn, company_id):
     if not company_id:
         err("--company-id is required")
-    if not conn.execute("SELECT id FROM company WHERE id = ?", (company_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("company")).select(Field("id")).where(Field("id") == P()).get_sql(), (company_id,)).fetchone():
         err(f"Company {company_id} not found")
 
 
 def _validate_parcel(conn, parcel_id):
     if not parcel_id:
         err("--parcel-id is required")
-    if not conn.execute("SELECT id FROM agricultureclaw_parcel WHERE id = ?", (parcel_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("agricultureclaw_parcel")).select(Field("id")).where(Field("id") == P()).get_sql(), (parcel_id,)).fetchone():
         err(f"Parcel {parcel_id} not found")
 
 
 def _validate_crop_type(conn, crop_type_id):
     if not crop_type_id:
         err("--crop-type-id is required")
-    if not conn.execute("SELECT id FROM agricultureclaw_crop_type WHERE id = ?", (crop_type_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("agricultureclaw_crop_type")).select(Field("id")).where(Field("id") == P()).get_sql(), (crop_type_id,)).fetchone():
         err(f"Crop type {crop_type_id} not found")
 
 
@@ -57,11 +58,8 @@ def add_crop_type(conn, args):
 
     ct_id = str(uuid.uuid4())
     days = getattr(args, "days_to_maturity", None)
-    conn.execute("""
-        INSERT INTO agricultureclaw_crop_type (
-            id, name, variety, growing_season, days_to_maturity, company_id
-        ) VALUES (?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_crop_type", {"id": P(), "name": P(), "variety": P(), "growing_season": P(), "days_to_maturity": P(), "company_id": P()})
+    conn.execute(sql, (
         ct_id, name,
         getattr(args, "variety", None),
         getattr(args, "growing_season", None),
@@ -118,13 +116,8 @@ def add_planting_plan(conn, args):
     now = _now_iso()
     year_val = getattr(args, "year", None)
 
-    conn.execute("""
-        INSERT INTO agricultureclaw_planting_plan (
-            id, naming_series, parcel_id, crop_type_id, season, year,
-            planned_acres, seed_lot_id, planting_date, expected_harvest_date,
-            plan_status, company_id, created_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_planting_plan", {"id": P(), "naming_series": P(), "parcel_id": P(), "crop_type_id": P(), "season": P(), "year": P(), "planned_acres": P(), "seed_lot_id": P(), "planting_date": P(), "expected_harvest_date": P(), "plan_status": P(), "company_id": P(), "created_at": P(), "updated_at": P()})
+    conn.execute(sql, (
         pp_id, naming, parcel_id, crop_type_id,
         getattr(args, "season", None),
         int(year_val) if year_val is not None else None,
@@ -148,7 +141,7 @@ def update_planting_plan(conn, args):
     pp_id = getattr(args, "id", None)
     if not pp_id:
         err("--id is required")
-    if not conn.execute("SELECT id FROM agricultureclaw_planting_plan WHERE id = ?", (pp_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("agricultureclaw_planting_plan")).select(Field("id")).where(Field("id") == P()).get_sql(), (pp_id,)).fetchone():
         err(f"Planting plan {pp_id} not found")
 
     updates, params, changed = [], [], []
@@ -197,16 +190,13 @@ def get_planting_plan(conn, args):
     pp_id = getattr(args, "id", None)
     if not pp_id:
         err("--id is required")
-    row = conn.execute("SELECT * FROM agricultureclaw_planting_plan WHERE id = ?", (pp_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("agricultureclaw_planting_plan")).select(Table("agricultureclaw_planting_plan").star).where(Field("id") == P()).get_sql(), (pp_id,)).fetchone()
     if not row:
         err(f"Planting plan {pp_id} not found")
     data = row_to_dict(row)
 
     # Include growth stages
-    stages = conn.execute(
-        "SELECT * FROM agricultureclaw_growth_stage WHERE planting_plan_id = ? ORDER BY observed_date ASC",
-        (pp_id,)
-    ).fetchall()
+    stages = conn.execute(Q.from_(Table("agricultureclaw_growth_stage")).select(Table("agricultureclaw_growth_stage").star).where(Field("planting_plan_id") == P()).orderby(Field("observed_date"), order=Order.asc).get_sql(), (pp_id,)).fetchall()
     data["growth_stages"] = [row_to_dict(s) for s in stages]
     data["stage_count"] = len(stages)
     ok(data)
@@ -254,7 +244,7 @@ def add_growth_stage(conn, args):
     plan_id = getattr(args, "planting_plan_id", None)
     if not plan_id:
         err("--planting-plan-id is required")
-    if not conn.execute("SELECT id FROM agricultureclaw_planting_plan WHERE id = ?", (plan_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("agricultureclaw_planting_plan")).select(Field("id")).where(Field("id") == P()).get_sql(), (plan_id,)).fetchone():
         err(f"Planting plan {plan_id} not found")
 
     stage_name = getattr(args, "stage_name", None)
@@ -262,11 +252,8 @@ def add_growth_stage(conn, args):
         err("--stage-name is required")
 
     gs_id = str(uuid.uuid4())
-    conn.execute("""
-        INSERT INTO agricultureclaw_growth_stage (
-            id, planting_plan_id, stage_name, observed_date, notes, company_id
-        ) VALUES (?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_growth_stage", {"id": P(), "planting_plan_id": P(), "stage_name": P(), "observed_date": P(), "notes": P(), "company_id": P()})
+    conn.execute(sql, (
         gs_id, plan_id, stage_name,
         getattr(args, "observed_date", None),
         getattr(args, "notes", None),
@@ -314,7 +301,7 @@ def advance_growth_stage(conn, args):
     pp_id = getattr(args, "id", None)
     if not pp_id:
         err("--id is required")
-    row = conn.execute("SELECT * FROM agricultureclaw_planting_plan WHERE id = ?", (pp_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("agricultureclaw_planting_plan")).select(Table("agricultureclaw_planting_plan").star).where(Field("id") == P()).get_sql(), (pp_id,)).fetchone()
     if not row:
         err(f"Planting plan {pp_id} not found")
     data = row_to_dict(row)
@@ -324,9 +311,7 @@ def advance_growth_stage(conn, args):
     if data["plan_status"] == "abandoned":
         err("Plan is abandoned")
 
-    stage_count = conn.execute(
-        "SELECT COUNT(*) FROM agricultureclaw_growth_stage WHERE planting_plan_id = ?", (pp_id,)
-    ).fetchone()[0]
+    stage_count = conn.execute(Q.from_(Table("agricultureclaw_growth_stage")).select(fn.Count("*")).where(Field("planting_plan_id") == P()).get_sql(), (pp_id,)).fetchone()[0]
 
     if stage_count == 0:
         err("No growth stages recorded. Add at least one growth stage first.")
@@ -351,12 +336,8 @@ def add_seed_lot(conn, args):
     _validate_crop_type(conn, crop_type_id)
 
     sl_id = str(uuid.uuid4())
-    conn.execute("""
-        INSERT INTO agricultureclaw_seed_lot (
-            id, crop_type_id, lot_number, quantity, unit, supplier,
-            purchase_date, expiry_date, company_id
-        ) VALUES (?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_seed_lot", {"id": P(), "crop_type_id": P(), "lot_number": P(), "quantity": P(), "unit": P(), "supplier": P(), "purchase_date": P(), "expiry_date": P(), "company_id": P()})
+    conn.execute(sql, (
         sl_id, crop_type_id,
         getattr(args, "lot_number", None),
         getattr(args, "quantity", None),

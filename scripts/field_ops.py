@@ -14,6 +14,7 @@ try:
     from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, update_row
 
     ENTITY_PREFIXES.setdefault("field_operation", "FOP-")
 except ImportError:
@@ -34,14 +35,14 @@ VALID_CHEM_TARGETS = ("pest", "weed", "disease", "nutrient")
 def _validate_company(conn, company_id):
     if not company_id:
         err("--company-id is required")
-    if not conn.execute("SELECT id FROM company WHERE id = ?", (company_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("company")).select(Field("id")).where(Field("id") == P()).get_sql(), (company_id,)).fetchone():
         err(f"Company {company_id} not found")
 
 
 def _validate_parcel(conn, parcel_id):
     if not parcel_id:
         err("--parcel-id is required")
-    if not conn.execute("SELECT id FROM agricultureclaw_parcel WHERE id = ?", (parcel_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("agricultureclaw_parcel")).select(Field("id")).where(Field("id") == P()).get_sql(), (parcel_id,)).fetchone():
         err(f"Parcel {parcel_id} not found")
 
 
@@ -64,13 +65,8 @@ def add_field_operation(conn, args):
     naming = get_next_name(conn, "field_operation", company_id=args.company_id)
     now = _now_iso()
 
-    conn.execute("""
-        INSERT INTO agricultureclaw_field_operation (
-            id, naming_series, parcel_id, operation_type, planned_date, completed_date,
-            operator, equipment, cost, notes, op_status, company_id,
-            created_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_field_operation", {"id": P(), "naming_series": P(), "parcel_id": P(), "operation_type": P(), "planned_date": P(), "completed_date": P(), "operator": P(), "equipment": P(), "cost": P(), "notes": P(), "op_status": P(), "company_id": P(), "created_at": P(), "updated_at": P()})
+    conn.execute(sql, (
         fo_id, naming, parcel_id, operation_type,
         getattr(args, "planned_date", None),
         getattr(args, "completed_date", None),
@@ -94,7 +90,7 @@ def update_field_operation(conn, args):
     fo_id = getattr(args, "id", None)
     if not fo_id:
         err("--id is required")
-    if not conn.execute("SELECT id FROM agricultureclaw_field_operation WHERE id = ?", (fo_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("agricultureclaw_field_operation")).select(Field("id")).where(Field("id") == P()).get_sql(), (fo_id,)).fetchone():
         err(f"Field operation {fo_id} not found")
 
     updates, params, changed = [], [], []
@@ -136,7 +132,7 @@ def get_field_operation(conn, args):
     fo_id = getattr(args, "id", None)
     if not fo_id:
         err("--id is required")
-    row = conn.execute("SELECT * FROM agricultureclaw_field_operation WHERE id = ?", (fo_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("agricultureclaw_field_operation")).select(Table("agricultureclaw_field_operation").star).where(Field("id") == P()).get_sql(), (fo_id,)).fetchone()
     if not row:
         err(f"Field operation {fo_id} not found")
     ok(row_to_dict(row))
@@ -183,7 +179,7 @@ def complete_field_operation(conn, args):
     fo_id = getattr(args, "id", None)
     if not fo_id:
         err("--id is required")
-    row = conn.execute("SELECT * FROM agricultureclaw_field_operation WHERE id = ?", (fo_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("agricultureclaw_field_operation")).select(Table("agricultureclaw_field_operation").star).where(Field("id") == P()).get_sql(), (fo_id,)).fetchone()
     if not row:
         err(f"Field operation {fo_id} not found")
 
@@ -222,12 +218,8 @@ def add_scouting_report(conn, args):
         err(f"Invalid crop-health: {crop_health}. Must be one of: {', '.join(VALID_CROP_HEALTH)}")
 
     sr_id = str(uuid.uuid4())
-    conn.execute("""
-        INSERT INTO agricultureclaw_scouting_report (
-            id, parcel_id, scout_date, pest_found, disease_found,
-            weed_pressure, crop_health, notes, photos, company_id
-        ) VALUES (?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_scouting_report", {"id": P(), "parcel_id": P(), "scout_date": P(), "pest_found": P(), "disease_found": P(), "weed_pressure": P(), "crop_health": P(), "notes": P(), "photos": P(), "company_id": P()})
+    conn.execute(sql, (
         sr_id, parcel_id,
         getattr(args, "scout_date", None),
         getattr(args, "pest_found", None),
@@ -285,11 +277,8 @@ def add_irrigation_log(conn, args):
         err(f"Invalid method: {method}. Must be one of: {', '.join(VALID_IRRIGATION_METHODS)}")
 
     il_id = str(uuid.uuid4())
-    conn.execute("""
-        INSERT INTO agricultureclaw_irrigation_log (
-            id, parcel_id, irrigation_date, method, gallons, duration_hours, company_id
-        ) VALUES (?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_irrigation_log", {"id": P(), "parcel_id": P(), "irrigation_date": P(), "method": P(), "gallons": P(), "duration_hours": P(), "company_id": P()})
+    conn.execute(sql, (
         il_id, parcel_id,
         getattr(args, "irrigation_date", None),
         method,
@@ -344,12 +333,8 @@ def add_chemical_application(conn, args):
         err(f"Invalid target: {target}. Must be one of: {', '.join(VALID_CHEM_TARGETS)}")
 
     ca_id = str(uuid.uuid4())
-    conn.execute("""
-        INSERT INTO agricultureclaw_chemical_application (
-            id, parcel_id, application_date, chemical_name, epa_reg_number,
-            rate, unit, target, applicator, wind_speed, temperature, company_id
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("agricultureclaw_chemical_application", {"id": P(), "parcel_id": P(), "application_date": P(), "chemical_name": P(), "epa_reg_number": P(), "rate": P(), "unit": P(), "target": P(), "applicator": P(), "wind_speed": P(), "temperature": P(), "company_id": P()})
+    conn.execute(sql, (
         ca_id, parcel_id,
         getattr(args, "application_date", None),
         getattr(args, "chemical_name", None),
