@@ -13,7 +13,7 @@ try:
     from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
-    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, update_row
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, LiteralValue, insert_row, update_row, dynamic_update
 
     ENTITY_PREFIXES.setdefault("animal", "ANM-")
 except ImportError:
@@ -96,7 +96,7 @@ def update_animal(conn, args):
     if not conn.execute(Q.from_(Table("agricultureclaw_animal")).select(Field("id")).where(Field("id") == P()).get_sql(), (animal_id,)).fetchone():
         err(f"Animal {animal_id} not found")
 
-    updates, params, changed = [], [], []
+    data, changed = {}, []
     for arg_name, col_name in {
         "tag_number": "tag_number", "breed": "breed", "birth_date": "birth_date",
         "purchase_date": "purchase_date", "purchase_cost": "purchase_cost",
@@ -104,33 +104,29 @@ def update_animal(conn, args):
     }.items():
         val = getattr(args, arg_name, None)
         if val is not None:
-            updates.append(f"{col_name} = ?")
-            params.append(val)
+            data[col_name] = val
             changed.append(col_name)
 
     gender = getattr(args, "gender", None)
     if gender is not None:
         if gender not in VALID_GENDERS:
             err(f"Invalid gender: {gender}. Must be one of: {', '.join(VALID_GENDERS)}")
-        updates.append("gender = ?")
-        params.append(gender)
+        data["gender"] = gender
         changed.append("gender")
 
     animal_status = getattr(args, "animal_status", None)
     if animal_status is not None:
         if animal_status not in VALID_ANIMAL_STATUS:
             err(f"Invalid animal-status: {animal_status}. Must be one of: {', '.join(VALID_ANIMAL_STATUS)}")
-        updates.append("animal_status = ?")
-        params.append(animal_status)
+        data["animal_status"] = animal_status
         changed.append("animal_status")
 
-    if not updates:
+    if not data:
         err("No fields to update")
 
-    updates.append("updated_at = ?")
-    params.append(_now_iso())
-    params.append(animal_id)
-    conn.execute(f"UPDATE agricultureclaw_animal SET {', '.join(updates)} WHERE id = ?", params)
+    data["updated_at"] = _now_iso()
+    sql, params = dynamic_update("agricultureclaw_animal", data, where={"id": animal_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "agri-update-animal", "agricultureclaw_animal", animal_id,
           new_values={"updated_fields": changed})
     conn.commit()
@@ -163,29 +159,30 @@ def get_animal(conn, args):
 # 4. list-animals
 # ===========================================================================
 def list_animals(conn, args):
-    where, params = ["1=1"], []
+    t = Table("agricultureclaw_animal")
+    q = Q.from_(t).select(t.star)
+    qc = Q.from_(t).select(fn.Count("*"))
+    params = []
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q = q.where(t.company_id == P())
+        qc = qc.where(t.company_id == P())
         params.append(args.company_id)
     if getattr(args, "species", None):
-        where.append("species = ?")
+        q = q.where(t.species == P())
+        qc = qc.where(t.species == P())
         params.append(args.species)
     if getattr(args, "animal_status", None):
-        where.append("animal_status = ?")
+        q = q.where(t.animal_status == P())
+        qc = qc.where(t.animal_status == P())
         params.append(args.animal_status)
     if getattr(args, "search", None):
-        where.append("(tag_number LIKE ? OR breed LIKE ?)")
+        q = q.where((t.tag_number.like(P())) | (t.breed.like(P())))
+        qc = qc.where((t.tag_number.like(P())) | (t.breed.like(P())))
         params.extend([f"%{args.search}%", f"%{args.search}%"])
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_animal WHERE {where_sql}", params
-    ).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM agricultureclaw_animal WHERE {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        params
-    ).fetchall()
+    total = conn.execute(qc.get_sql(), params).fetchone()[0]
+    q = q.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({
         "rows": [row_to_dict(r) for r in rows],
         "total_count": total, "limit": args.limit, "offset": args.offset,
@@ -228,26 +225,26 @@ def add_health_record(conn, args):
 # 6. list-health-records
 # ===========================================================================
 def list_health_records(conn, args):
-    where, params = ["1=1"], []
+    t = Table("agricultureclaw_health_record")
+    q = Q.from_(t).select(t.star)
+    qc = Q.from_(t).select(fn.Count("*"))
+    params = []
     if getattr(args, "animal_id", None):
-        where.append("animal_id = ?")
+        q = q.where(t.animal_id == P())
+        qc = qc.where(t.animal_id == P())
         params.append(args.animal_id)
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q = q.where(t.company_id == P())
+        qc = qc.where(t.company_id == P())
         params.append(args.company_id)
     if getattr(args, "record_type", None):
-        where.append("record_type = ?")
+        q = q.where(t.record_type == P())
+        qc = qc.where(t.record_type == P())
         params.append(args.record_type)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_health_record WHERE {where_sql}", params
-    ).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM agricultureclaw_health_record WHERE {where_sql} ORDER BY record_date DESC LIMIT ? OFFSET ?",
-        params
-    ).fetchall()
+    total = conn.execute(qc.get_sql(), params).fetchone()[0]
+    q = q.orderby(t.record_date, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({
         "rows": [row_to_dict(r) for r in rows],
         "total_count": total, "limit": args.limit, "offset": args.offset,
@@ -284,23 +281,22 @@ def add_feeding_record(conn, args):
 # 8. list-feeding-records
 # ===========================================================================
 def list_feeding_records(conn, args):
-    where, params = ["1=1"], []
+    t = Table("agricultureclaw_feeding_record")
+    q = Q.from_(t).select(t.star)
+    qc = Q.from_(t).select(fn.Count("*"))
+    params = []
     if getattr(args, "animal_id", None):
-        where.append("animal_id = ?")
+        q = q.where(t.animal_id == P())
+        qc = qc.where(t.animal_id == P())
         params.append(args.animal_id)
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q = q.where(t.company_id == P())
+        qc = qc.where(t.company_id == P())
         params.append(args.company_id)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_feeding_record WHERE {where_sql}", params
-    ).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM agricultureclaw_feeding_record WHERE {where_sql} ORDER BY feed_date DESC LIMIT ? OFFSET ?",
-        params
-    ).fetchall()
+    total = conn.execute(qc.get_sql(), params).fetchone()[0]
+    q = q.orderby(t.feed_date, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({
         "rows": [row_to_dict(r) for r in rows],
         "total_count": total, "limit": args.limit, "offset": args.offset,
@@ -332,10 +328,11 @@ def add_weight_record(conn, args):
     ))
 
     # Update current_weight on the animal
-    conn.execute(
-        "UPDATE agricultureclaw_animal SET current_weight = ?, updated_at = ? WHERE id = ?",
-        (weight, _now_iso(), animal_id)
-    )
+    sql_uw, uw_params = dynamic_update("agricultureclaw_animal", {
+        "current_weight": weight,
+        "updated_at": _now_iso(),
+    }, where={"id": animal_id})
+    conn.execute(sql_uw, uw_params)
 
     audit(conn, SKILL, "agri-add-weight-record", "agricultureclaw_weight_record", wr_id,
           new_values={"animal_id": animal_id, "weight": weight})

@@ -15,7 +15,7 @@ try:
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
     from erpclaw_lib.decimal_utils import to_decimal, round_currency
-    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, update_row
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, LiteralValue, insert_row, update_row, dynamic_update
 
     ENTITY_PREFIXES.setdefault("coop_member", "COOP-")
     ENTITY_PREFIXES.setdefault("delivery_ticket", "DT-")
@@ -83,26 +83,26 @@ def add_coop_member(conn, args):
 # 2. list-coop-members
 # ===========================================================================
 def list_coop_members(conn, args):
-    where, params = ["1=1"], []
+    t = Table("agricultureclaw_coop_member")
+    q = Q.from_(t).select(t.star)
+    qc = Q.from_(t).select(fn.Count("*"))
+    params = []
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q = q.where(t.company_id == P())
+        qc = qc.where(t.company_id == P())
         params.append(args.company_id)
     if getattr(args, "member_status", None):
-        where.append("member_status = ?")
+        q = q.where(t.member_status == P())
+        qc = qc.where(t.member_status == P())
         params.append(args.member_status)
     if getattr(args, "search", None):
-        where.append("(name LIKE ? OR member_number LIKE ?)")
+        q = q.where((t.name.like(P())) | (t.member_number.like(P())))
+        qc = qc.where((t.name.like(P())) | (t.member_number.like(P())))
         params.extend([f"%{args.search}%", f"%{args.search}%"])
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_coop_member WHERE {where_sql}", params
-    ).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM agricultureclaw_coop_member WHERE {where_sql} ORDER BY name ASC LIMIT ? OFFSET ?",
-        params
-    ).fetchall()
+    total = conn.execute(qc.get_sql(), params).fetchone()[0]
+    q = q.orderby(t.name, order=Order.asc).limit(P()).offset(P())
+    rows = conn.execute(q.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({
         "rows": [row_to_dict(r) for r in rows],
         "total_count": total, "limit": args.limit, "offset": args.offset,
@@ -168,23 +168,22 @@ def add_delivery_ticket(conn, args):
 # 4. list-delivery-tickets
 # ===========================================================================
 def list_delivery_tickets(conn, args):
-    where, params = ["1=1"], []
+    t = Table("agricultureclaw_delivery_ticket")
+    q = Q.from_(t).select(t.star)
+    qc = Q.from_(t).select(fn.Count("*"))
+    params = []
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q = q.where(t.company_id == P())
+        qc = qc.where(t.company_id == P())
         params.append(args.company_id)
     if getattr(args, "member_id", None):
-        where.append("member_id = ?")
+        q = q.where(t.member_id == P())
+        qc = qc.where(t.member_id == P())
         params.append(args.member_id)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_delivery_ticket WHERE {where_sql}", params
-    ).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM agricultureclaw_delivery_ticket WHERE {where_sql} ORDER BY delivery_date DESC LIMIT ? OFFSET ?",
-        params
-    ).fetchall()
+    total = conn.execute(qc.get_sql(), params).fetchone()[0]
+    q = q.orderby(t.delivery_date, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({
         "rows": [row_to_dict(r) for r in rows],
         "total_count": total, "limit": args.limit, "offset": args.offset,
@@ -201,8 +200,9 @@ def calculate_patronage(conn, args):
     _validate_member(conn, member_id)
 
     # Get all delivery tickets for this member
+    dt = Table("agricultureclaw_delivery_ticket")
     tickets = conn.execute(
-        "SELECT * FROM agricultureclaw_delivery_ticket WHERE member_id = ? AND company_id = ?",
+        Q.from_(dt).select(dt.star).where(dt.member_id == P()).where(dt.company_id == P()).get_sql(),
         (member_id, args.company_id)
     ).fetchall()
 
@@ -265,23 +265,22 @@ def add_pool_account(conn, args):
 # 7. list-pool-accounts
 # ===========================================================================
 def list_pool_accounts(conn, args):
-    where, params = ["1=1"], []
+    t = Table("agricultureclaw_pool_account")
+    q = Q.from_(t).select(t.star)
+    qc = Q.from_(t).select(fn.Count("*"))
+    params = []
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q = q.where(t.company_id == P())
+        qc = qc.where(t.company_id == P())
         params.append(args.company_id)
     if getattr(args, "pool_status", None):
-        where.append("pool_status = ?")
+        q = q.where(t.pool_status == P())
+        qc = qc.where(t.pool_status == P())
         params.append(args.pool_status)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_pool_account WHERE {where_sql}", params
-    ).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM agricultureclaw_pool_account WHERE {where_sql} ORDER BY pool_year DESC LIMIT ? OFFSET ?",
-        params
-    ).fetchall()
+    total = conn.execute(qc.get_sql(), params).fetchone()[0]
+    q = q.orderby(t.pool_year, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({
         "rows": [row_to_dict(r) for r in rows],
         "total_count": total, "limit": args.limit, "offset": args.offset,
@@ -293,25 +292,27 @@ def list_pool_accounts(conn, args):
 # 8. cooperative-summary-report
 # ===========================================================================
 def cooperative_summary_report(conn, args):
-    where, params = ["1=1"], []
+    cm = Table("agricultureclaw_coop_member")
+    dt_tbl = Table("agricultureclaw_delivery_ticket")
+    pa = Table("agricultureclaw_pool_account")
+    params = []
+
+    q_cm = Q.from_(cm).select(fn.Count("*"))
+    q_cm_active = Q.from_(cm).select(fn.Count("*")).where(cm.member_status == "active")
+    q_dt = Q.from_(dt_tbl).select(fn.Count("*"))
+    q_pa = Q.from_(pa).select(fn.Count("*"))
+
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q_cm = q_cm.where(cm.company_id == P())
+        q_cm_active = q_cm_active.where(cm.company_id == P())
+        q_dt = q_dt.where(dt_tbl.company_id == P())
+        q_pa = q_pa.where(pa.company_id == P())
         params.append(args.company_id)
 
-    where_sql = " AND ".join(where)
-
-    total_members = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_coop_member WHERE {where_sql}", params
-    ).fetchone()[0]
-    active_members = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_coop_member WHERE {where_sql} AND member_status = 'active'", params
-    ).fetchone()[0]
-    total_tickets = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_delivery_ticket WHERE {where_sql}", params
-    ).fetchone()[0]
-    total_pools = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_pool_account WHERE {where_sql}", params
-    ).fetchone()[0]
+    total_members = conn.execute(q_cm.get_sql(), params).fetchone()[0]
+    active_members = conn.execute(q_cm_active.get_sql(), params).fetchone()[0]
+    total_tickets = conn.execute(q_dt.get_sql(), params).fetchone()[0]
+    total_pools = conn.execute(q_pa.get_sql(), params).fetchone()[0]
 
     ok({
         "total_members": total_members,
@@ -361,13 +362,14 @@ def submit_delivery_ticket(conn, args):
     cost_center_id = getattr(args, "cost_center_id", None) or ticket["cost_center_id"]
 
     # Persist any account overrides
-    conn.execute("""
-        UPDATE agricultureclaw_delivery_ticket
-        SET revenue_account_id = ?, receivable_account_id = ?,
-            cogs_account_id = ?, inventory_account_id = ?, cost_center_id = ?
-        WHERE id = ?
-    """, (revenue_account_id, receivable_account_id,
-          cogs_account_id, inventory_account_id, cost_center_id, dt_id))
+    sql_acct, acct_params = dynamic_update("agricultureclaw_delivery_ticket", {
+        "revenue_account_id": revenue_account_id,
+        "receivable_account_id": receivable_account_id,
+        "cogs_account_id": cogs_account_id,
+        "inventory_account_id": inventory_account_id,
+        "cost_center_id": cost_center_id,
+    }, where={"id": dt_id})
+    conn.execute(sql_acct, acct_params)
 
     all_gl_ids = []
 
@@ -441,11 +443,11 @@ def submit_delivery_ticket(conn, args):
 
     # Mark submitted + store GL entry IDs
     gl_ids_str = ",".join(all_gl_ids) if all_gl_ids else None
-    conn.execute("""
-        UPDATE agricultureclaw_delivery_ticket
-        SET ticket_status = 'submitted', gl_entry_ids = ?
-        WHERE id = ?
-    """, (gl_ids_str, dt_id))
+    sql_sub, sub_params = dynamic_update("agricultureclaw_delivery_ticket", {
+        "ticket_status": "submitted",
+        "gl_entry_ids": gl_ids_str,
+    }, where={"id": dt_id})
+    conn.execute(sql_sub, sub_params)
 
     audit(conn, SKILL, "agri-submit-delivery-ticket", "agricultureclaw_delivery_ticket", dt_id,
           new_values={"ticket_status": "submitted", "gl_entry_count": len(all_gl_ids)})
@@ -500,11 +502,10 @@ def cancel_delivery_ticket(conn, args):
         except Exception as e:
             sys.stderr.write(f"[{SKILL}] GL reversal error: {e}\n")
 
-    conn.execute("""
-        UPDATE agricultureclaw_delivery_ticket
-        SET ticket_status = 'cancelled'
-        WHERE id = ?
-    """, (dt_id,))
+    sql_cancel, cancel_params = dynamic_update("agricultureclaw_delivery_ticket", {
+        "ticket_status": "cancelled",
+    }, where={"id": dt_id})
+    conn.execute(sql_cancel, cancel_params)
 
     audit(conn, SKILL, "agri-cancel-delivery-ticket", "agricultureclaw_delivery_ticket", dt_id,
           new_values={"ticket_status": "cancelled", "reversal_count": len(reversal_ids)})

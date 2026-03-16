@@ -15,7 +15,7 @@ try:
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
     from erpclaw_lib.decimal_utils import to_decimal, round_currency
-    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, update_row
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, LiteralValue, insert_row, update_row, dynamic_update
 
     ENTITY_PREFIXES.setdefault("harvest_record", "HRV-")
 except ImportError:
@@ -105,7 +105,7 @@ def update_harvest_record(conn, args):
     if not conn.execute(Q.from_(Table("agricultureclaw_harvest_record")).select(Field("id")).where(Field("id") == P()).get_sql(), (hr_id,)).fetchone():
         err(f"Harvest record {hr_id} not found")
 
-    updates, params, changed = [], [], []
+    data, changed = {}, []
     for arg_name, col_name in {
         "harvest_date": "harvest_date", "yield_amount": "yield_amount",
         "yield_unit": "yield_unit", "moisture_content": "moisture_content",
@@ -114,17 +114,15 @@ def update_harvest_record(conn, args):
     }.items():
         val = getattr(args, arg_name, None)
         if val is not None:
-            updates.append(f"{col_name} = ?")
-            params.append(val)
+            data[col_name] = val
             changed.append(col_name)
 
-    if not updates:
+    if not data:
         err("No fields to update")
 
-    updates.append("updated_at = ?")
-    params.append(_now_iso())
-    params.append(hr_id)
-    conn.execute(f"UPDATE agricultureclaw_harvest_record SET {', '.join(updates)} WHERE id = ?", params)
+    data["updated_at"] = _now_iso()
+    sql, params = dynamic_update("agricultureclaw_harvest_record", data, where={"id": hr_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "agri-update-harvest-record", "agricultureclaw_harvest_record", hr_id,
           new_values={"updated_fields": changed})
     conn.commit()
@@ -135,26 +133,26 @@ def update_harvest_record(conn, args):
 # 3. list-harvest-records
 # ===========================================================================
 def list_harvest_records(conn, args):
-    where, params = ["1=1"], []
+    t = Table("agricultureclaw_harvest_record")
+    q = Q.from_(t).select(t.star)
+    qc = Q.from_(t).select(fn.Count("*"))
+    params = []
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q = q.where(t.company_id == P())
+        qc = qc.where(t.company_id == P())
         params.append(args.company_id)
     if getattr(args, "parcel_id", None):
-        where.append("parcel_id = ?")
+        q = q.where(t.parcel_id == P())
+        qc = qc.where(t.parcel_id == P())
         params.append(args.parcel_id)
     if getattr(args, "planting_plan_id", None):
-        where.append("planting_plan_id = ?")
+        q = q.where(t.planting_plan_id == P())
+        qc = qc.where(t.planting_plan_id == P())
         params.append(args.planting_plan_id)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_harvest_record WHERE {where_sql}", params
-    ).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM agricultureclaw_harvest_record WHERE {where_sql} ORDER BY harvest_date DESC LIMIT ? OFFSET ?",
-        params
-    ).fetchall()
+    total = conn.execute(qc.get_sql(), params).fetchone()[0]
+    q = q.orderby(t.harvest_date, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({
         "rows": [row_to_dict(r) for r in rows],
         "total_count": total, "limit": args.limit, "offset": args.offset,
@@ -196,20 +194,18 @@ def add_storage_bin(conn, args):
 # 5. list-storage-bins
 # ===========================================================================
 def list_storage_bins(conn, args):
-    where, params = ["1=1"], []
+    t = Table("agricultureclaw_storage_bin")
+    q = Q.from_(t).select(t.star)
+    qc = Q.from_(t).select(fn.Count("*"))
+    params = []
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q = q.where(t.company_id == P())
+        qc = qc.where(t.company_id == P())
         params.append(args.company_id)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_storage_bin WHERE {where_sql}", params
-    ).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM agricultureclaw_storage_bin WHERE {where_sql} ORDER BY name ASC LIMIT ? OFFSET ?",
-        params
-    ).fetchall()
+    total = conn.execute(qc.get_sql(), params).fetchone()[0]
+    q = q.orderby(t.name, order=Order.asc).limit(P()).offset(P())
+    rows = conn.execute(q.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({
         "rows": [row_to_dict(r) for r in rows],
         "total_count": total, "limit": args.limit, "offset": args.offset,
@@ -252,23 +248,22 @@ def add_quality_grade(conn, args):
 # 7. list-quality-grades
 # ===========================================================================
 def list_quality_grades(conn, args):
-    where, params = ["1=1"], []
+    t = Table("agricultureclaw_quality_grade")
+    q = Q.from_(t).select(t.star)
+    qc = Q.from_(t).select(fn.Count("*"))
+    params = []
     if getattr(args, "harvest_id", None):
-        where.append("harvest_id = ?")
+        q = q.where(t.harvest_id == P())
+        qc = qc.where(t.harvest_id == P())
         params.append(args.harvest_id)
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q = q.where(t.company_id == P())
+        qc = qc.where(t.company_id == P())
         params.append(args.company_id)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_quality_grade WHERE {where_sql}", params
-    ).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM agricultureclaw_quality_grade WHERE {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        params
-    ).fetchall()
+    total = conn.execute(qc.get_sql(), params).fetchone()[0]
+    q = q.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({
         "rows": [row_to_dict(r) for r in rows],
         "total_count": total, "limit": args.limit, "offset": args.offset,
@@ -306,15 +301,14 @@ def yield_analysis_report(conn, args):
 # 9. harvest-summary
 # ===========================================================================
 def harvest_summary(conn, args):
-    where, params = ["1=1"], []
+    t = Table("agricultureclaw_harvest_record")
+    qc = Q.from_(t).select(fn.Count("*"))
+    params = []
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        qc = qc.where(t.company_id == P())
         params.append(args.company_id)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_harvest_record WHERE {where_sql}", params
-    ).fetchone()[0]
+    total = conn.execute(qc.get_sql(), params).fetchone()[0]
 
     ok({
         "total_harvest_records": total,

@@ -14,7 +14,7 @@ try:
     from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
-    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, update_row
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, LiteralValue, insert_row, update_row, dynamic_update
 
     ENTITY_PREFIXES.setdefault("field_operation", "FOP-")
 except ImportError:
@@ -93,32 +93,29 @@ def update_field_operation(conn, args):
     if not conn.execute(Q.from_(Table("agricultureclaw_field_operation")).select(Field("id")).where(Field("id") == P()).get_sql(), (fo_id,)).fetchone():
         err(f"Field operation {fo_id} not found")
 
-    updates, params, changed = [], [], []
+    data, changed = {}, []
     for arg_name, col_name in {
         "planned_date": "planned_date", "completed_date": "completed_date",
         "operator": "operator", "equipment": "equipment", "cost": "cost", "notes": "notes",
     }.items():
         val = getattr(args, arg_name, None)
         if val is not None:
-            updates.append(f"{col_name} = ?")
-            params.append(val)
+            data[col_name] = val
             changed.append(col_name)
 
     op_status = getattr(args, "op_status", None)
     if op_status is not None:
         if op_status not in VALID_OP_STATUS:
             err(f"Invalid op-status: {op_status}. Must be one of: {', '.join(VALID_OP_STATUS)}")
-        updates.append("op_status = ?")
-        params.append(op_status)
+        data["op_status"] = op_status
         changed.append("op_status")
 
-    if not updates:
+    if not data:
         err("No fields to update")
 
-    updates.append("updated_at = ?")
-    params.append(_now_iso())
-    params.append(fo_id)
-    conn.execute(f"UPDATE agricultureclaw_field_operation SET {', '.join(updates)} WHERE id = ?", params)
+    data["updated_at"] = _now_iso()
+    sql, params = dynamic_update("agricultureclaw_field_operation", data, where={"id": fo_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "agri-update-field-operation", "agricultureclaw_field_operation", fo_id,
           new_values={"updated_fields": changed})
     conn.commit()
@@ -142,29 +139,30 @@ def get_field_operation(conn, args):
 # 4. list-field-operations
 # ===========================================================================
 def list_field_operations(conn, args):
-    where, params = ["1=1"], []
+    t = Table("agricultureclaw_field_operation")
+    q = Q.from_(t).select(t.star)
+    qc = Q.from_(t).select(fn.Count("*"))
+    params = []
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q = q.where(t.company_id == P())
+        qc = qc.where(t.company_id == P())
         params.append(args.company_id)
     if getattr(args, "parcel_id", None):
-        where.append("parcel_id = ?")
+        q = q.where(t.parcel_id == P())
+        qc = qc.where(t.parcel_id == P())
         params.append(args.parcel_id)
     if getattr(args, "operation_type", None):
-        where.append("operation_type = ?")
+        q = q.where(t.operation_type == P())
+        qc = qc.where(t.operation_type == P())
         params.append(args.operation_type)
     if getattr(args, "op_status", None):
-        where.append("op_status = ?")
+        q = q.where(t.op_status == P())
+        qc = qc.where(t.op_status == P())
         params.append(args.op_status)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_field_operation WHERE {where_sql}", params
-    ).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM agricultureclaw_field_operation WHERE {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        params
-    ).fetchall()
+    total = conn.execute(qc.get_sql(), params).fetchone()[0]
+    q = q.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({
         "rows": [row_to_dict(r) for r in rows],
         "total_count": total, "limit": args.limit, "offset": args.offset,
@@ -191,10 +189,12 @@ def complete_field_operation(conn, args):
 
     now = _now_iso()
     completed_date = getattr(args, "completed_date", None) or now[:10]
-    conn.execute(
-        "UPDATE agricultureclaw_field_operation SET op_status = 'completed', completed_date = ?, updated_at = ? WHERE id = ?",
-        (completed_date, now, fo_id)
-    )
+    sql, upd_params = dynamic_update("agricultureclaw_field_operation", {
+        "op_status": "completed",
+        "completed_date": completed_date,
+        "updated_at": now,
+    }, where={"id": fo_id})
+    conn.execute(sql, upd_params)
     audit(conn, SKILL, "agri-complete-field-operation", "agricultureclaw_field_operation", fo_id,
           new_values={"op_status": "completed", "completed_date": completed_date})
     conn.commit()
@@ -240,23 +240,22 @@ def add_scouting_report(conn, args):
 # 7. list-scouting-reports
 # ===========================================================================
 def list_scouting_reports(conn, args):
-    where, params = ["1=1"], []
+    t = Table("agricultureclaw_scouting_report")
+    q = Q.from_(t).select(t.star)
+    qc = Q.from_(t).select(fn.Count("*"))
+    params = []
     if getattr(args, "parcel_id", None):
-        where.append("parcel_id = ?")
+        q = q.where(t.parcel_id == P())
+        qc = qc.where(t.parcel_id == P())
         params.append(args.parcel_id)
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q = q.where(t.company_id == P())
+        qc = qc.where(t.company_id == P())
         params.append(args.company_id)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_scouting_report WHERE {where_sql}", params
-    ).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM agricultureclaw_scouting_report WHERE {where_sql} ORDER BY scout_date DESC LIMIT ? OFFSET ?",
-        params
-    ).fetchall()
+    total = conn.execute(qc.get_sql(), params).fetchone()[0]
+    q = q.orderby(t.scout_date, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({
         "rows": [row_to_dict(r) for r in rows],
         "total_count": total, "limit": args.limit, "offset": args.offset,
@@ -296,23 +295,22 @@ def add_irrigation_log(conn, args):
 # 9. list-irrigation-logs
 # ===========================================================================
 def list_irrigation_logs(conn, args):
-    where, params = ["1=1"], []
+    t = Table("agricultureclaw_irrigation_log")
+    q = Q.from_(t).select(t.star)
+    qc = Q.from_(t).select(fn.Count("*"))
+    params = []
     if getattr(args, "parcel_id", None):
-        where.append("parcel_id = ?")
+        q = q.where(t.parcel_id == P())
+        qc = qc.where(t.parcel_id == P())
         params.append(args.parcel_id)
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q = q.where(t.company_id == P())
+        qc = qc.where(t.company_id == P())
         params.append(args.company_id)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_irrigation_log WHERE {where_sql}", params
-    ).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM agricultureclaw_irrigation_log WHERE {where_sql} ORDER BY irrigation_date DESC LIMIT ? OFFSET ?",
-        params
-    ).fetchall()
+    total = conn.execute(qc.get_sql(), params).fetchone()[0]
+    q = q.orderby(t.irrigation_date, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({
         "rows": [row_to_dict(r) for r in rows],
         "total_count": total, "limit": args.limit, "offset": args.offset,
@@ -357,23 +355,22 @@ def add_chemical_application(conn, args):
 # 11. list-chemical-applications
 # ===========================================================================
 def list_chemical_applications(conn, args):
-    where, params = ["1=1"], []
+    t = Table("agricultureclaw_chemical_application")
+    q = Q.from_(t).select(t.star)
+    qc = Q.from_(t).select(fn.Count("*"))
+    params = []
     if getattr(args, "parcel_id", None):
-        where.append("parcel_id = ?")
+        q = q.where(t.parcel_id == P())
+        qc = qc.where(t.parcel_id == P())
         params.append(args.parcel_id)
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q = q.where(t.company_id == P())
+        qc = qc.where(t.company_id == P())
         params.append(args.company_id)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM agricultureclaw_chemical_application WHERE {where_sql}", params
-    ).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM agricultureclaw_chemical_application WHERE {where_sql} ORDER BY application_date DESC LIMIT ? OFFSET ?",
-        params
-    ).fetchall()
+    total = conn.execute(qc.get_sql(), params).fetchone()[0]
+    q = q.orderby(t.application_date, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({
         "rows": [row_to_dict(r) for r in rows],
         "total_count": total, "limit": args.limit, "offset": args.offset,

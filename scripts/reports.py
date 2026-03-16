@@ -36,7 +36,7 @@ def status_action(conn, args):
     counts = {}
     for tbl in ALL_TABLES:
         try:
-            counts[tbl] = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+            counts[tbl] = conn.execute(Q.from_(Table(tbl)).select(fn.Count("*")).get_sql()).fetchone()[0]
         except Exception:
             counts[tbl] = -1  # table missing
     ok({
