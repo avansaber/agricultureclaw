@@ -145,6 +145,8 @@ python3 {baseDir}/scripts/db_query.py --action status
 | `agri-list-storage-bins` | Harvest | List storage bins |
 | `agri-add-quality-grade` | Harvest | Grade a harvest sample |
 | `agri-list-quality-grades` | Harvest | List quality grades |
+| `agri-submit-harvest-sale` | Harvest | Submit harvest sale (posts GL entries) |
+| `agri-cancel-harvest-sale` | Harvest | Cancel harvest sale (reverses GL entries) |
 | `agri-yield-analysis-report` | Harvest | Yield analysis across parcels |
 | `agri-harvest-summary` | Harvest | Harvest summary statistics |
 | `agri-crop-profitability-report` | Harvest | Revenue and cost analysis |
@@ -161,6 +163,8 @@ python3 {baseDir}/scripts/db_query.py --action status
 | `agri-add-coop-member` | Cooperative | Register a cooperative member |
 | `agri-list-coop-members` | Cooperative | List cooperative members |
 | `agri-add-delivery-ticket` | Cooperative | Record a grain delivery |
+| `agri-submit-delivery-ticket` | Cooperative | Submit a delivery ticket |
+| `agri-cancel-delivery-ticket` | Cooperative | Cancel a delivery ticket |
 | `agri-list-delivery-tickets` | Cooperative | List delivery tickets |
 | `agri-calculate-patronage` | Cooperative | Calculate member patronage |
 | `agri-add-pool-account` | Cooperative | Create a commodity pool |
