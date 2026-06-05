@@ -1,6 +1,6 @@
 # AgricultureClaw
 
-Agriculture management for [ERPClaw](https://github.com/avansaber/erpclaw). Land parcels, crop planning, field operations, harvest tracking, livestock management, and cooperative accounting. 63 actions across 6 domains.
+Agriculture management for [ERPClaw](https://github.com/avansaber/erpclaw). Land parcels, crop planning, field operations, harvest tracking, livestock management, and cooperative accounting. <!-- SYNC:value:module.agricultureclaw.actions -->67<!-- /SYNC --> actions across 6 domains.
 
 ## Features
 
