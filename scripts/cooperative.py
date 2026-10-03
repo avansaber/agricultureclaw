@@ -375,6 +375,9 @@ def submit_delivery_ticket(conn, args):
 
     all_gl_ids = []
 
+    # When accounts are supplied the ledger is not optional: a posting failure
+    # rolls back the whole submit and says why. Posts under the registered
+    # journal_entry voucher type, as the loans module does.
     # --- Primary GL: Revenue recognition ---
     if HAS_GL and revenue_account_id and receivable_account_id:
         try:
@@ -395,7 +398,7 @@ def submit_delivery_ticket(conn, args):
             ]
             gl_ids = insert_gl_entries(
                 conn, primary_entries,
-                voucher_type="Commodity Sale",
+                voucher_type="journal_entry",
                 voucher_id=dt_id,
                 posting_date=posting_date,
                 company_id=company_id,
@@ -403,9 +406,9 @@ def submit_delivery_ticket(conn, args):
                 entry_set="primary",
             )
             all_gl_ids.extend(gl_ids)
-        except (ValueError, Exception) as e:
-            # GL posting failed -- still allow submit but warn
-            sys.stderr.write(f"[{SKILL}] GL primary posting skipped: {e}\n")
+        except Exception as e:
+            conn.rollback()
+            err(f"GL posting failed for delivery ticket {ticket['naming_series'] or dt_id}: {e}")
 
     # --- COGS GL: Cost of goods sold (optional) ---
     if HAS_GL and cogs_account_id and inventory_account_id:
@@ -432,7 +435,7 @@ def submit_delivery_ticket(conn, args):
                 ]
                 cogs_gl_ids = insert_gl_entries(
                     conn, cogs_entries,
-                    voucher_type="Commodity Sale",
+                    voucher_type="journal_entry",
                     voucher_id=dt_id,
                     posting_date=posting_date,
                     company_id=company_id,
@@ -440,8 +443,9 @@ def submit_delivery_ticket(conn, args):
                     entry_set="cogs",
                 )
                 all_gl_ids.extend(cogs_gl_ids)
-            except (ValueError, Exception) as e:
-                sys.stderr.write(f"[{SKILL}] GL COGS posting skipped: {e}\n")
+            except Exception as e:
+                conn.rollback()
+                err(f"GL posting failed for delivery ticket COGS {ticket['naming_series'] or dt_id}: {e}")
 
     # Mark submitted + store GL entry IDs
     gl_ids_str = ",".join(all_gl_ids) if all_gl_ids else None
@@ -491,18 +495,15 @@ def cancel_delivery_ticket(conn, args):
     # Reverse GL entries if they exist
     if HAS_GL and ticket["gl_entry_ids"]:
         try:
-            # Reverse primary entries
-            try:
-                primary_rev = reverse_gl_entries(
-                    conn, voucher_type="Commodity Sale",
-                    voucher_id=dt_id, posting_date=posting_date,
-                )
-                reversal_ids.extend(primary_rev)
-            except ValueError:
-                pass  # No primary entries to reverse
-
+            # Reverses every entry set (primary and cogs) posted for the ticket
+            rev_ids = reverse_gl_entries(
+                conn, voucher_type="journal_entry",
+                voucher_id=dt_id, posting_date=posting_date,
+            )
+            reversal_ids.extend(rev_ids)
         except Exception as e:
-            sys.stderr.write(f"[{SKILL}] GL reversal error: {e}\n")
+            conn.rollback()
+            err(f"GL reversal failed for delivery ticket {ticket['naming_series'] or dt_id}: {e}")
 
     sql_cancel, cancel_params = dynamic_update("agricultureclaw_delivery_ticket", {
         "ticket_status": "cancelled",

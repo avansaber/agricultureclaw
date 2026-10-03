@@ -396,6 +396,9 @@ def submit_harvest_sale(conn, args):
 
     all_gl_ids = []
 
+    # When accounts are supplied the ledger is not optional: a posting failure
+    # rolls back the whole submit and says why. Posts under the registered
+    # journal_entry voucher type, as the loans module does.
     if HAS_GL and revenue_account_id and receivable_account_id:
         try:
             entries = [
@@ -413,7 +416,7 @@ def submit_harvest_sale(conn, args):
             ]
             gl_ids = insert_gl_entries(
                 conn, entries,
-                voucher_type="Harvest Sale",
+                voucher_type="journal_entry",
                 voucher_id=hr_id,
                 posting_date=posting_date,
                 company_id=company_id,
@@ -421,8 +424,9 @@ def submit_harvest_sale(conn, args):
                 entry_set="primary",
             )
             all_gl_ids.extend(gl_ids)
-        except (ValueError, Exception) as e:
-            sys.stderr.write(f"[{SKILL}] GL posting skipped for harvest sale: {e}\n")
+        except Exception as e:
+            conn.rollback()
+            err(f"GL posting failed for harvest sale {record['naming_series'] or hr_id}: {e}")
 
     # Mark submitted
     gl_ids_str = ",".join(all_gl_ids) if all_gl_ids else None
@@ -472,12 +476,13 @@ def cancel_harvest_sale(conn, args):
     if HAS_GL and record["gl_entry_ids"]:
         try:
             rev_ids = reverse_gl_entries(
-                conn, voucher_type="Harvest Sale",
+                conn, voucher_type="journal_entry",
                 voucher_id=hr_id, posting_date=posting_date,
             )
             reversal_ids.extend(rev_ids)
-        except (ValueError, Exception) as e:
-            sys.stderr.write(f"[{SKILL}] GL reversal error for harvest sale: {e}\n")
+        except Exception as e:
+            conn.rollback()
+            err(f"GL reversal failed for harvest sale {record['naming_series'] or hr_id}: {e}")
 
     conn.execute("""
         UPDATE agricultureclaw_harvest_record
